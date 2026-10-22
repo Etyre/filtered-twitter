@@ -132,7 +132,20 @@ export default function SettingsView({
         </div>
         <label><input type="checkbox" checked={draft.followSync} onChange={(e) => set('followSync', e.target.checked)} /> Browsing account gradually follows the same people</label>
         <label>Follows per day <input type="number" min={0} max={50} value={draft.followPerDay} onChange={(e) => set('followPerDay', Number(e.target.value))} />
-          <button className="link" disabled={!!busy || !session?.loggedIn} onClick={() => void run('follow', async () => { await save(); const r = await window.api.followSyncNow(); return r.error ? r.error : `Followed ${r.followed.length} account(s) this run.` })}>{busy === 'follow' ? 'Following… (this takes a few minutes)' : 'Run a batch now'}</button>
+          <button className="link" disabled={!!busy || !session?.loggedIn} onClick={() => void run('follow', async () => {
+            await save()
+            // The batch pauses between follows for minutes; show the count climbing while it runs.
+            const tick = setInterval(() => void window.api.getSettings().then((s) => setDraft((d) => (d ? { ...d, browsingFollows: s.browsingFollows } : d))), 10_000)
+            try {
+              const r = await window.api.followSyncNow()
+              const s = await window.api.getSettings()
+              onSettings(s)
+              setDraft(s)
+              return r.error ? r.error : `Followed ${r.followed.length} account(s) this run.`
+            } finally {
+              clearInterval(tick)
+            }
+          })}>{busy === 'follow' ? 'Following… (this takes a few minutes)' : 'Run a batch now'}</button>
         </label>
       </section>
 

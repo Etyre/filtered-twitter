@@ -83,6 +83,23 @@ export async function usersByIds(ids: string[]): Promise<RawUser[]> {
   return r.data ?? []
 }
 
+/** Everyone a user follows, through the official API: up to 1000 per request, paged until done. */
+export async function following(userId: string): Promise<RawUser[]> {
+  const out: RawUser[] = []
+  let token: string | undefined
+  for (let page = 0; page < 10; page++) {
+    const u = new URL(`https://api.x.com/2/users/${userId}/following`)
+    u.searchParams.set('max_results', '1000')
+    u.searchParams.set('user.fields', 'id,username,name,profile_image_url')
+    if (token) u.searchParams.set('pagination_token', token)
+    const r = await call<{ data?: RawUser[]; meta?: { next_token?: string } }>('GET', u.toString())
+    out.push(...(r.data ?? []))
+    token = r.meta?.next_token
+    if (!token) break
+  }
+  return out
+}
+
 export async function createPost(text: string, replyToId?: string): Promise<string> {
   const body: Record<string, unknown> = { text }
   if (replyToId) body.reply = { in_reply_to_tweet_id: replyToId }

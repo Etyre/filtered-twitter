@@ -16,6 +16,10 @@ export interface Captured {
 const X_ORIGIN = 'https://x.com'
 export const PARTITION = 'persist:browsing'
 
+function isRecordWithErrors(v: unknown): v is { errors: { message: string }[] } {
+  return !!v && typeof v === 'object' && Array.isArray((v as { errors?: unknown }).errors)
+}
+
 /** True when the browsing partition holds X's auth_token cookie. Filters by name only: Electron's domain filter is unreliable for dotted domains. */
 export async function hasAuthCookie(): Promise<boolean> {
   const cookies = await session.fromPartition(PARTITION).cookies.get({ name: 'auth_token' })
@@ -323,11 +327,20 @@ export class XBrowser {
       let count = await this.waitForNewCaptures(ops, 0, 15000)
       let stalls = 0
       while (count < maxPages && stalls < 3) {
-        await this.scrollDown()
+        const win = await this.ensure()
+        // A virtualized list loads more only when its end comes into view: go to the bottom, then nudge again.
+        await win.webContents.executeJavaScript('window.scrollTo(0, document.documentElement.scrollHeight); true').catch(() => {})
+        await this.sleep(600)
+        await win.webContents.executeJavaScript('window.scrollTo(0, document.documentElement.scrollHeight); true').catch(() => {})
         const next = await this.waitForNewCaptures(ops, count, 7000)
         if (next === count) stalls++
         else stalls = 0
         count = next
+      }
+      if (count <= 1) {
+        const seen = [...new Set(this.captures.map((c) => c.op))]
+        const errors = this.captures.flatMap((c) => (isRecordWithErrors(c.json) ? c.json.errors.map((e) => e.message) : []))
+        this.log(`following list of @${handle} stopped after ${count} page(s); ops seen: ${seen.join(', ') || 'none'}${errors.length ? '; errors: ' + errors.slice(0, 2).join(' | ') : ''}`)
       }
       const users = new Map<string, Author>()
       const walk = (v: unknown, depth: number): void => {

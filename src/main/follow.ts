@@ -4,11 +4,28 @@
 import { loadSettings, saveSettings } from './settings'
 import { localDate } from './edition'
 import type { XBrowser } from './x/browser'
+import * as official from './x/official'
+import { ensureUserId } from './x/actions'
+
+/** Your following list: through the official API when keys are set (complete and cheap), else read by the browsing account. */
+async function myFollowing(browser: XBrowser, log: (m: string) => void): Promise<{ handle: string }[]> {
+  const s = loadSettings()
+  if (s.hasXApiKeys) {
+    try {
+      const users = await official.following(await ensureUserId())
+      log(`following list via API: ${users.length} accounts`)
+      return users.map((u) => ({ handle: u.username }))
+    } catch (e) {
+      log('following list via API failed, falling back to the browsing account: ' + String(e))
+    }
+  }
+  if (!s.xHandle) throw new Error('Set your account handle first (verify your API keys in Settings).')
+  return browser.followingList(s.xHandle)
+}
 
 export async function refreshFollowing(browser: XBrowser, log: (m: string) => void): Promise<void> {
   const s = loadSettings()
-  if (!s.xHandle) throw new Error('Set your account handle first (verify your API keys in Settings).')
-  const mine = await browser.followingList(s.xHandle)
+  const mine = await myFollowing(browser, log)
   const patch: Partial<typeof s> = { followingHandles: mine.map((u) => u.handle.toLowerCase()), followingFetchedAt: new Date().toISOString() }
   if (s.browsingHandle) {
     try {

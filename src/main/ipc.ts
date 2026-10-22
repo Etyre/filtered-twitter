@@ -18,7 +18,12 @@ export function registerIpc(browser: XBrowser, mainWin: () => BrowserWindow | nu
   onProgress((p) => mainWin()?.webContents.send('progress', p))
 
   ipcMain.handle('settings:get', () => loadSettings())
+  // Fields the app maintains itself. The Settings form sends its whole draft, which may be minutes old, so these never come from it.
+  const MACHINE_FIELDS: (keyof Settings)[] = [
+    'browsingFollows', 'browsingHandle', 'followingHandles', 'followingFetchedAt', 'lastFollowSyncDate', 'lastBackupAt', 'blendWeights', 'xUserId', 'hasAnthropicKey', 'hasXApiKeys'
+  ]
   ipcMain.handle('settings:save', async (_e, patch: Partial<Settings>) => {
+    for (const k of MACHINE_FIELDS) delete patch[k]
     if (patch.priorityHandles) patch.priorityHandles = [...new Set(patch.priorityHandles.map(normalizeHandle).filter(Boolean))]
     if (patch.xHandle !== undefined) patch.xHandle = normalizeHandle(patch.xHandle)
     const before = loadSettings()

@@ -68,24 +68,43 @@ function Video({ src, poster, onOpen }: { src: string; poster: string; onOpen: (
   )
 }
 
+// One vote per post, shared by every copy of it on screen (edition card, quote, reply), so they cannot disagree.
+type Vote = 1 | -1 | 0
+const knownVotes = new Map<string, Vote>()
+const voteListeners = new Map<string, Set<(v: Vote) => void>>()
+function publishVote(id: string, v: Vote): void {
+  knownVotes.set(id, v)
+  voteListeners.get(id)?.forEach((fn) => fn(v))
+}
+/** The shared vote for a post. `initial` seeds it when the caller already knows (an edition item); otherwise it is fetched once. */
+function useSharedVote(id: string, initial?: Vote): Vote {
+  const [vote, setLocal] = useState<Vote>(knownVotes.get(id) ?? initial ?? 0)
+  useEffect(() => {
+    const set = voteListeners.get(id) ?? new Set()
+    set.add(setLocal)
+    voteListeners.set(id, set)
+    if (knownVotes.has(id)) setLocal(knownVotes.get(id)!)
+    else if (initial !== undefined) knownVotes.set(id, initial)
+    else void window.api.getVote(id).then((v) => publishVote(id, v))
+    return () => { set.delete(setLocal) }
+  }, [id, initial])
+  return vote
+}
+
 /** Up and down votes for any post, inside or outside the edition. Up also likes on X; down only teaches the filter. */
-export function VoteButtons({ tweet, small = false }: { tweet: Tweet; small?: boolean }): React.JSX.Element {
-  const [vote, setVote] = useState<1 | -1 | 0>(0)
+export function VoteButtons({ tweet, small = false, initial, onChange }: { tweet: Tweet; small?: boolean; initial?: Vote; onChange?: () => void }): React.JSX.Element {
+  const vote = useSharedVote(tweet.id, initial)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
-  useEffect(() => {
-    let live = true
-    void window.api.getVote(tweet.id).then((v) => { if (live) setVote(v) })
-    return () => { live = false }
-  }, [tweet.id])
   const cast = async (v: 1 | -1): Promise<void> => {
-    const next = vote === v ? 0 : v
-    setVote(next)
+    const next: Vote = vote === v ? 0 : v
+    publishVote(tweet.id, next)
     setBusy(true)
     setErr(null)
     const r = await window.api.voteOnTweet(tweet, next)
     if (r.likeError) setErr('Vote saved, but the like failed: ' + r.likeError)
     setBusy(false)
+    onChange?.()
   }
   return (
     <span className={'votes' + (small ? ' small' : '')} onClick={(e) => e.stopPropagation()}>
@@ -195,7 +214,7 @@ export default function TweetCard({
 }): React.JSX.Element {
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
-  const [vote, setVote] = useState<1 | -1 | 0>(item.vote)
+  const vote = useSharedVote(item.tweet.id, item.vote)
   const [reposted, setReposted] = useState(false)
 
   const doRepost = async (): Promise<void> => {
@@ -207,16 +226,7 @@ export default function TweetCard({
     setBusy(false)
   }
 
-  const cast = async (v: 1 | -1): Promise<void> => {
-    const next = vote === v ? 0 : v
-    setVote(next)
-    setBusy(true)
-    setErr(null)
-    const r = await window.api.vote(editionId, item.tweet.id, next)
-    if (r.likeError) setErr('Vote saved, but the like failed: ' + r.likeError)
-    setBusy(false)
-    onChange()
-  }
+  void editionId // the vote path finds the post's edition itself
   const cat = item.category
   /** Clicking the card itself opens the post with what it replies to and the replies under it. Links, buttons, and media keep their own behaviour. */
   const openCard = (e: React.MouseEvent): void => {
@@ -232,8 +242,7 @@ export default function TweetCard({
       </div>
       <TweetBody tweet={item.tweet} />
       <div className="actions">
-        <button className={'vote up' + (vote === 1 ? ' on' : '')} disabled={busy} onClick={() => void cast(1)} title="Upvote (also likes on X)">▲ {vote === 1 ? 'Liked' : 'Up'}</button>
-        <button className={'vote down' + (vote === -1 ? ' on' : '')} disabled={busy} onClick={() => void cast(-1)} title="Downvote (less like this)">▼ {vote === -1 ? 'Less' : 'Down'}</button>
+        <VoteButtons tweet={item.tweet} initial={item.vote} onChange={onChange} />
         <button className="link" onClick={() => onOpenThread(item.tweet.id)}>
           {item.tweet.replies ? `Discussion (${fmtCount(item.tweet.replies)})` : 'Discussion'}{item.opened ? ' · seen' : ''}
         </button>
