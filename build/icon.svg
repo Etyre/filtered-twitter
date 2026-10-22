@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fffdf8"/>
+      <stop offset="1" stop-color="#efe9dc"/>
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="14" stdDeviation="18" flood-color="#000" flood-opacity="0.28"/>
+    </filter>
+  </defs>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#bg)" filter="url(#shadow)"/>
+  <!-- a low morning sun -->
+  <g stroke="#2f5d50" stroke-width="30" stroke-linecap="round" fill="none">
+    <line x1="512" y1="214" x2="512" y2="268"/>
+    <line x1="332" y1="288" x2="370" y2="326"/>
+    <line x1="692" y1="288" x2="654" y2="326"/>
+    <line x1="258" y1="468" x2="312" y2="468"/>
+    <line x1="766" y1="468" x2="712" y2="468"/>
+  </g>
+  <circle cx="512" cy="468" r="112" fill="#2f5d50"/>
+  <!-- the finite edition: three lines, nothing below them -->
+  <g stroke="#1b1a18" stroke-width="34" stroke-linecap="round">
+    <line x1="252" y1="628" x2="772" y2="628"/>
+    <line x1="300" y1="712" x2="724" y2="712"/>
+    <line x1="372" y1="796" x2="652" y2="796"/>
+  </g>
+</svg>
