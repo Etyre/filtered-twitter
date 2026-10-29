@@ -275,9 +275,20 @@ export class XBrowser {
       count = next
     }
     const result = this.collected(ops)
-    this.log(`${path}: ${result.length} tweets from ${count} responses`)
+    const noted = result.filter((t) => t.communityNote).length
+    this.log(`${path}: ${result.length} tweets from ${count} responses${noted ? `, ${noted} with a Community Note` : ''}`)
+    // If X carries notes in a shape the parser does not recognise, say what it looks like, once.
+    if (!noted && !this.pivotLogged) {
+      const raw = this.captures.find((c) => ops.test(c.op) && JSON.stringify(c.json).includes('birdwatch_pivot'))
+      if (raw) {
+        const m = /"birdwatch_pivot":(\{.{0,400})/.exec(JSON.stringify(raw.json))
+        this.log('birdwatch_pivot seen but no note parsed: ' + (m?.[1] ?? '?'))
+        this.pivotLogged = true
+      }
+    }
     return result
   }
+  private pivotLogged = false
 
   /** The browsing account's Following timeline (plus whatever "For you" served). */
   async homeTimeline(pages: number, cutoff: Date): Promise<{ following: Tweet[]; forYou: Tweet[] }> {

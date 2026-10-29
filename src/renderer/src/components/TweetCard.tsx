@@ -1,6 +1,11 @@
 import type React from 'react'
-import { createContext, useContext, useEffect, useState } from 'react'
-import type { EditionItem, Poll, Tweet } from '@shared/types'
+import Composer from './Composer'
+import { createContext, useContext, useEffect, useRef, useState } from 'react'
+import type { EditionItem, LinkCard, Poll, Tweet, Vote } from '@shared/types'
+import { networkName, networkOf, postUrl } from '@shared/net'
+import { openImages } from './Lightbox'
+import { openClaudeChat } from './ClaudePanel'
+import Hls from 'hls.js'
 
 /** How to open a post as its own discussion inside the app. Without a provider, quoted posts open on X instead. */
 export const OpenThreadContext = createContext<((tweetId: string) => void) | null>(null)
@@ -19,7 +24,8 @@ export function fmtCount(n: number): string {
 }
 
 function Linkified({ text }: { text: string }): React.JSX.Element {
-  const parts = text.split(/(https?:\/\/\S+|@[A-Za-z0-9_]{1,15})/g)
+  // X handles are letters, digits and underscores; Bluesky handles are domain names, so dots inside a handle count, a trailing one does not.
+  const parts = text.split(/(https?:\/\/\S+|@[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*)/g)
   return (
     <>
       {parts.map((p, i) => {
@@ -42,21 +48,40 @@ function preview(text: string, max: number): string {
   return (atWord > max * 0.6 ? cut.slice(0, atWord) : cut).trimEnd() + '…'
 }
 
-/** A post's video. If Chromium cannot play it, say why instead of showing a dead player. */
-function Video({ src, poster, onOpen }: { src: string; poster: string; onOpen: () => void }): React.JSX.Element {
+/** Bluesky serves video as an HLS playlist, which Chromium's <video> cannot play on its own. */
+const isHls = (src: string): boolean => /\.m3u8(\?|$)/.test(src)
+
+/** A post's video. HLS streams go through hls.js; if the video cannot play, say why instead of showing a dead player. */
+function Video({ src, poster, ratio, where, onOpen }: { src: string; poster: string; ratio?: string; where: string; onOpen: () => void }): React.JSX.Element {
   const [err, setErr] = useState<string | null>(null)
+  const el = useRef<HTMLVideoElement>(null)
+  const hls = isHls(src)
+  useEffect(() => {
+    if (!hls || !el.current) return
+    if (!Hls.isSupported()) {
+      setErr('HLS not supported')
+      return
+    }
+    const h = new Hls({ enableWorker: false })
+    h.on(Hls.Events.ERROR, (_e, data) => { if (data.fatal) setErr(data.details) })
+    h.loadSource(src)
+    h.attachMedia(el.current)
+    return () => h.destroy()
+  }, [src, hls])
   if (err) {
     return (
       <div className="video-failed" onClick={onOpen}>
         <img src={poster} alt="" loading="lazy" />
-        <div className="small">Video would not play here ({err}). Click to watch on X.</div>
+        <div className="small">Video would not play here ({err}). Click to watch on {where}.</div>
       </div>
     )
   }
   return (
     <video
-      src={src}
+      ref={el}
+      src={hls ? undefined : src}
       poster={poster}
+      style={ratio ? { aspectRatio: ratio } : undefined}
       controls
       preload="metadata"
       playsInline
@@ -69,7 +94,6 @@ function Video({ src, poster, onOpen }: { src: string; poster: string; onOpen: (
 }
 
 // One vote per post, shared by every copy of it on screen (edition card, quote, reply), so they cannot disagree.
-type Vote = 1 | -1 | 0
 const knownVotes = new Map<string, Vote>()
 const voteListeners = new Map<string, Set<(v: Vote) => void>>()
 function publishVote(id: string, v: Vote): void {
@@ -91,13 +115,81 @@ function useSharedVote(id: string, initial?: Vote): Vote {
   return vote
 }
 
-/** Up and down votes for any post, inside or outside the edition. Up also likes on X; down only teaches the filter. */
+// Reposts, shared the same way: once a post is reposted, every copy of it says so.
+const knownReposts = new Map<string, boolean>() // reposts made or undone in this session, overriding what the stored post says
+const repostListeners = new Map<string, Set<() => void>>()
+function setReposted(id: string, on: boolean): void {
+  knownReposts.set(id, on)
+  repostListeners.get(id)?.forEach((fn) => fn())
+}
+function useReposted(tweet: Tweet): boolean {
+  const [, bump] = useState(0)
+  useEffect(() => {
+    const set = repostListeners.get(tweet.id) ?? new Set()
+    const fn = (): void => bump((n) => n + 1)
+    set.add(fn)
+    repostListeners.set(tweet.id, set)
+    return () => { set.delete(fn) }
+  }, [tweet.id])
+  return knownReposts.get(tweet.id) ?? !!tweet.reposted
+}
+
+/** A link preview, as Bluesky attaches to posts. */
+function CardView({ card }: { card: LinkCard }): React.JSX.Element {
+  let host = ''
+  try {
+    host = new URL(card.url).hostname.replace(/^www\./, '')
+  } catch {
+    /* leave empty */
+  }
+  return (
+    <a className="link-card" href={card.url} onClick={(e) => { e.preventDefault(); e.stopPropagation(); void window.api.openExternal(card.url) }}>
+      {card.image ? <img src={card.image} alt="" loading="lazy" /> : null}
+      <div className="link-card-text">
+        <div className="link-card-title">{card.title}</div>
+        {card.description ? <div className="muted small link-card-desc">{card.description}</div> : null}
+        {host ? <div className="muted small">{host}</div> : null}
+      </div>
+    </a>
+  )
+}
+
+/** Repost and Quote for any post. Repost goes straight to the post's network; Quote asks the parent to open a composer. */
+export function PostActions({ tweet, onQuote }: { tweet: Tweet; onQuote: () => void }): React.JSX.Element {
+  const reposted = useReposted(tweet)
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+  const doRepost = async (on: boolean): Promise<void> => {
+    setBusy(true)
+    setErr(null)
+    const r = on ? await window.api.repost(tweet.id) : await window.api.unrepost(tweet.id)
+    if (r.ok) setReposted(tweet.id, on)
+    else setErr((on ? 'Repost' : 'Undo repost') + ' failed: ' + r.error)
+    setBusy(false)
+  }
+  const where = networkName(networkOf(tweet))
+  return (
+    <>
+      {reposted ? (
+        <button className="link" disabled={busy} onClick={() => void doRepost(false)} title={`Take back your repost on ${where}`}>{busy ? 'Undoing…' : 'Reposted ✓ · Undo'}</button>
+      ) : (
+        <button className="link" disabled={busy} onClick={() => void doRepost(true)} title={`Repost from your ${where} account`}>{busy ? 'Reposting…' : 'Repost'}</button>
+      )}
+      <button className="link" onClick={onQuote} title="Quote this post">Quote</button>
+      <button className="link" onClick={() => openClaudeChat(tweet)} title="Open a chat with Claude about this post and its discussion">Talk to Claude</button>
+      {err ? <span className="error small">{err}</span> : null}
+    </>
+  )
+}
+
+/** Up and down votes for any post, inside or outside the edition. Up also likes it on its network; down only teaches the filter. */
 export function VoteButtons({ tweet, small = false, initial, onChange }: { tweet: Tweet; small?: boolean; initial?: Vote; onChange?: () => void }): React.JSX.Element {
   const vote = useSharedVote(tweet.id, initial)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
-  const cast = async (v: 1 | -1): Promise<void> => {
-    const next: Vote = vote === v ? 0 : v
+  // Up and Down toggle off. Super toggles back to a plain upvote, so the like it made stays.
+  const cast = async (v: 2 | 1 | -1): Promise<void> => {
+    const next: Vote = v === 2 ? (vote === 2 ? 1 : 2) : v === 1 ? (vote >= 1 ? 0 : 1) : vote === -1 ? 0 : -1
     publishVote(tweet.id, next)
     setBusy(true)
     setErr(null)
@@ -108,7 +200,8 @@ export function VoteButtons({ tweet, small = false, initial, onChange }: { tweet
   }
   return (
     <span className={'votes' + (small ? ' small' : '')} onClick={(e) => e.stopPropagation()}>
-      <button className={'vote up' + (vote === 1 ? ' on' : '')} disabled={busy} onClick={() => void cast(1)} title="Upvote (also likes on X)">▲ {vote === 1 ? 'Liked' : 'Up'}</button>
+      <button className={'vote up' + (vote >= 1 ? ' on' : '')} disabled={busy} onClick={() => void cast(1)} title={`Upvote (also likes on ${networkName(networkOf(tweet))})`}>▲ {vote >= 1 ? 'Liked' : 'Up'}</button>
+      <button className={'vote super' + (vote === 2 ? ' on' : '')} disabled={busy} onClick={() => void cast(2)} title="Super upvote: this was extremely valuable to me (also likes it)">★ {vote === 2 ? 'Essential' : 'Super'}</button>
       <button className={'vote down' + (vote === -1 ? ' on' : '')} disabled={busy} onClick={() => void cast(-1)} title="Downvote (less like this)">▼ {vote === -1 ? 'Less' : 'Down'}</button>
       {err ? <span className="error small">{err}</span> : null}
     </span>
@@ -139,16 +232,34 @@ function PollView({ poll }: { poll: Poll }): React.JSX.Element {
   )
 }
 
+// X's codes for "no particular language"; anything else that is not English can be translated.
+const UNTRANSLATABLE = new Set(['en', 'und', 'qme', 'qht', 'qst', 'qam', 'zxx', 'art'])
+
 export function TweetBody({ tweet, compact = false }: { tweet: Tweet; compact?: boolean }): React.JSX.Element {
-  const openOnX = (): void => void window.api.openExternal(`https://x.com/${tweet.author.handle}/status/${tweet.id}`)
+  const net = networkOf(tweet)
+  const openOnX = (): void => void window.api.openExternal(postUrl(tweet))
+  const photos = tweet.media.filter((x) => x.type === 'photo').map((x) => x.url)
   const [showAll, setShowAll] = useState(false)
-  const folded = compact && !showAll && [...tweet.text].length > QUOTE_PREVIEW
+  // Translation: what the stored post carries, or what the Translate button just fetched.
+  const [translation, setTranslation] = useState<string | null>(tweet.translation ?? null)
+  useEffect(() => { if (tweet.translation) setTranslation(tweet.translation) }, [tweet.translation]) // a translation made after the post was shown
+  const [showOriginal, setShowOriginal] = useState(false)
+  const [translating, setTranslating] = useState(false)
+  const foreign = !!tweet.lang && !UNTRANSLATABLE.has(tweet.lang)
+  const translate = async (): Promise<void> => {
+    setTranslating(true)
+    const t = await window.api.translateTweet(tweet.id)
+    setTranslating(false)
+    if (t?.translation) setTranslation(t.translation)
+  }
+  const text = translation && !showOriginal ? translation : tweet.text
+  const folded = compact && !showAll && [...text].length > QUOTE_PREVIEW
   const openThread = useContext(OpenThreadContext)
   const openQuoted = (e: React.MouseEvent): void => {
     if (!tweet.quoted || (e.target as HTMLElement).closest('a, button, video')) return // links and buttons inside keep their own behaviour
     e.stopPropagation() // the card around it would otherwise open the outer post
     if (openThread) openThread(tweet.quoted.id)
-    else void window.api.openExternal(`https://x.com/${tweet.quoted.author.handle}/status/${tweet.quoted.id}`)
+    else void window.api.openExternal(postUrl(tweet.quoted))
   }
   return (
     <div className={'tweet-body' + (compact ? ' compact' : '')}>
@@ -158,6 +269,7 @@ export function TweetBody({ tweet, compact = false }: { tweet: Tweet; compact?: 
           <span className="name">{tweet.author.name}</span>
           <span className="handle">@{tweet.author.handle}</span>
           {tweet.author.verified ? <span className="verified" title="verified">✓</span> : null}
+          {net === 'bsky' ? <span className="tag bsky" title="A Bluesky post">Bluesky</span> : null}
         </div>
         <button className="time link" title={new Date(tweet.createdAt).toLocaleString()} onClick={openOnX}>{timeAgo(tweet.createdAt)}</button>
       </div>
@@ -168,20 +280,46 @@ export function TweetBody({ tweet, compact = false }: { tweet: Tweet; compact?: 
           : <div className="muted small">Replying to @{tweet.inReplyToHandle}</div>
       ) : null}
       <p className="text">
-        <Linkified text={folded ? preview(tweet.text, QUOTE_PREVIEW) : tweet.text} />
+        <Linkified text={folded ? preview(text, QUOTE_PREVIEW) : text} />
         {folded ? <> <button className="link small" onClick={() => setShowAll(true)}>Show more</button></> : null}
       </p>
-      {tweet.media.length ? (
-        <div className={'media n' + Math.min(4, tweet.media.length)}>
-          {tweet.media.slice(0, 4).map((m, i) =>
-            m.videoUrl ? (
-              <Video key={i} src={m.videoUrl} poster={m.url} onOpen={openOnX} />
-            ) : (
-              <img key={i} src={m.url} alt="" loading="lazy" onClick={openOnX} />
-            )
-          )}
+      {translation ? (
+        <div className="muted small translation-note">
+          {showOriginal ? 'Original' : `Translated from ${tweet.lang}`} · <button className="link small" onClick={() => setShowOriginal((o) => !o)}>{showOriginal ? 'show translation' : 'show original'}</button>
+        </div>
+      ) : foreign ? (
+        <div className="muted small translation-note">
+          <button className="link small" disabled={translating} onClick={() => void translate()}>{translating ? 'Translating…' : 'Translate'}</button>
         </div>
       ) : null}
+      {tweet.media.length ? (
+        <div className={'media n' + Math.min(4, tweet.media.length)}>
+          {/* photos open in the viewer, in order, so the arrows step through this post's pictures */}
+          {tweet.media.slice(0, 4).map((m, i) => {
+            const ratio = m.width && m.height ? `${m.width} / ${m.height}` : undefined // keeps tall media tall and wide media wide
+            // Bluesky posts stored before the stream address was kept: it sits beside the thumbnail.
+            const videoUrl = m.videoUrl ?? (net === 'bsky' && m.type === 'video' ? m.url.replace(/\/thumbnail\.jpg$/, '/playlist.m3u8') : undefined)
+            return videoUrl && videoUrl !== m.url ? (
+              <Video key={i} src={videoUrl} poster={m.url} ratio={ratio} where={networkName(net)} onOpen={openOnX} />
+            ) : m.type === 'video' ? (
+              <div key={i} className="video-ext" onClick={openOnX} title={`Watch on ${networkName(net)}`}>
+                <img src={m.url} alt="" loading="lazy" style={ratio ? { aspectRatio: ratio } : undefined} />
+                <span className="play">▶</span>
+              </div>
+            ) : (
+              <img key={i} src={m.url} alt="" loading="lazy" style={ratio ? { aspectRatio: ratio } : undefined} title="View larger" onClick={(e) => { e.stopPropagation(); openImages(photos, photos.indexOf(m.url)) }} />
+            )
+          })}
+        </div>
+      ) : null}
+      {tweet.communityNote ? (
+        <div className="community-note" onClick={(e) => e.stopPropagation()}>
+          <div className="community-note-title">Readers added context</div>
+          <div className="community-note-text"><Linkified text={tweet.communityNote.text} /></div>
+          {tweet.communityNote.url ? <button className="link small" onClick={() => void window.api.openExternal(tweet.communityNote!.url!)}>Read the note on X</button> : null}
+        </div>
+      ) : null}
+      {tweet.card ? <CardView card={tweet.card} /> : null}
       {tweet.poll ? <PollView poll={tweet.poll} /> : null}
       {tweet.quoted ? (
         <div className="quoted clickable" role="link" title="Open this post" onClick={openQuoted}>
@@ -212,26 +350,31 @@ export default function TweetCard({
   onOpenThread: (tweetId: string) => void
   onChange: () => void
 }): React.JSX.Element {
-  const [busy, setBusy] = useState(false)
-  const [err, setErr] = useState<string | null>(null)
   const vote = useSharedVote(item.tweet.id, item.vote)
-  const [reposted, setReposted] = useState(false)
-
-  const doRepost = async (): Promise<void> => {
-    setBusy(true)
-    setErr(null)
-    const r = await window.api.repost(item.tweet.id)
-    if (r.ok) setReposted(true)
-    else setErr('Repost failed: ' + r.error)
-    setBusy(false)
-  }
+  const [quoting, setQuoting] = useState(false)
+  // A voted post folds to one line so the edition reads as a to-do list; it can be opened again, and folds afresh on the next vote.
+  const [expanded, setExpanded] = useState(false)
+  useEffect(() => setExpanded(false), [vote])
+  const collapsed = vote !== 0 && !expanded
 
   void editionId // the vote path finds the post's edition itself
   const cat = item.category
   /** Clicking the card itself opens the post with what it replies to and the replies under it. Links, buttons, and media keep their own behaviour. */
   const openCard = (e: React.MouseEvent): void => {
-    if ((e.target as HTMLElement).closest('a, button, video, img')) return
+    if ((e.target as HTMLElement).closest('a, button, video, img, .composer')) return
     onOpenThread(item.tweet.id)
+  }
+  if (collapsed) {
+    const text = item.tweet.text.replace(/\s+/g, ' ').trim()
+    return (
+      <article className={'card collapsed clickable' + (vote === -1 ? ' downvoted' : '')} onClick={() => setExpanded(true)} title="Show this post again">
+        <span className="rank">#{item.rank}</span>
+        <span className={'vote-mark ' + (vote === 2 ? 'super' : vote === 1 ? 'up' : 'down')}>{vote === 2 ? '★' : vote === 1 ? '▲' : '▼'}</span>
+        <span className="who">{item.tweet.author.name}</span>
+        <span className="snippet muted">{[...text].slice(0, 90).join('')}{[...text].length > 90 ? '…' : ''}</span>
+        <button className="link small" onClick={(e) => { e.stopPropagation(); setExpanded(true) }}>Show</button>
+      </article>
+    )
   }
   return (
     <article className={'card clickable' + (vote === -1 ? ' downvoted' : '')} onClick={openCard}>
@@ -247,9 +390,14 @@ export default function TweetCard({
           {item.tweet.replies ? `Discussion (${fmtCount(item.tweet.replies)})` : 'Discussion'}{item.opened ? ' · seen' : ''}
         </button>
         <button className="link" onClick={() => onOpenThread(item.tweet.id)}>{item.replied ? 'Replied ✓' : 'Reply'}</button>
-        <button className="link" disabled={busy || reposted} onClick={() => void doRepost()}>{reposted ? 'Reposted ✓' : 'Repost'}</button>
+        <PostActions tweet={item.tweet} onQuote={() => setQuoting((q) => !q)} />
       </div>
-      {err ? <div className="error small">{err}</div> : null}
+      {quoting ? (
+        <div className="reply-box">
+          <div className="muted small">Quoting @{item.tweet.author.handle}</div>
+          <Composer quoteId={item.tweet.id} onDone={() => setQuoting(false)} onCancel={() => setQuoting(false)} />
+        </div>
+      ) : null}
     </article>
   )
 }

@@ -1,7 +1,7 @@
-import Database from 'better-sqlite3'
+import Database, { type Statement } from 'better-sqlite3'
 import { app } from 'electron'
 import { join } from 'path'
-import type { Edition, EditionItem, EditionSummary, Notification, ScoredTweet, Thread, Tweet } from '@shared/types'
+import type { Edition, EditionItem, EditionSummary, Notification, ScoredTweet, Thread, Tweet, Vote } from '@shared/types'
 
 let db: Database.Database
 
@@ -92,7 +92,18 @@ export function setKv(key: string, value: string): void {
 }
 
 // ---------- tweets ----------
+const flagsStmt = (): Statement =>
+  db.prepare(
+    "SELECT json_extract(json,'$.liked') AS liked, json_extract(json,'$.reposted') AS reposted, json_extract(json,'$.translation') AS translation, json_extract(json,'$.quoted.translation') AS quotedTranslation, json_extract(json,'$.communityNote') AS note FROM tweets WHERE id = ?"
+  )
 export function upsertTweet(t: Tweet): void {
+  // A fresh copy from X does not know what this app did to the post; carry those flags over.
+  const prev = flagsStmt().get(t.id) as { liked: number | null; reposted: number | null; translation: string | null; quotedTranslation: string | null; note: string | null } | undefined
+  if (prev?.liked) t.liked = true
+  if (prev?.note && !t.communityNote) t.communityNote = JSON.parse(prev.note) as Tweet['communityNote'] // not every X response carries the note
+  if (prev?.reposted) t.reposted = true
+  if (prev?.translation && !t.translation) t.translation = prev.translation
+  if (prev?.quotedTranslation && t.quoted && !t.quoted.translation) t.quoted.translation = prev.quotedTranslation
   db.prepare(
     `INSERT INTO tweets(id,json,author_handle,created_at,fetched_at) VALUES(?,?,?,?,?)
      ON CONFLICT(id) DO UPDATE SET json=excluded.json, fetched_at=excluded.fetched_at`
@@ -113,6 +124,10 @@ export function getCachedThread(focalId: string): { thread: Thread; fetchedAt: s
   const row = db.prepare('SELECT json, fetched_at FROM threads WHERE focal_id = ?').get(focalId) as { json: string; fetched_at: string } | undefined
   return row ? { thread: JSON.parse(row.json) as Thread, fetchedAt: row.fetched_at } : null
 }
+/** Forgets every stored discussion that shows this post, so the next open fetches it afresh (after a reply of yours, say). */
+export function expireThreadsWith(tweetId: string): void {
+  db.prepare(`DELETE FROM threads WHERE focal_id = ? OR json LIKE '%' || ? || '%'`).run(tweetId, tweetId)
+}
 export function setCachedThread(focalId: string, thread: Thread): void {
   db.prepare('INSERT INTO threads(focal_id, json, fetched_at) VALUES(?,?,?) ON CONFLICT(focal_id) DO UPDATE SET json=excluded.json, fetched_at=excluded.fetched_at').run(
     focalId, JSON.stringify(thread), new Date().toISOString()
@@ -127,6 +142,12 @@ export function setTweetLiked(id: string, liked: boolean): void {
   const t = getTweet(id)
   if (!t) return
   t.liked = liked
+  upsertTweet(t)
+}
+export function setTweetReposted(id: string, on = true): void {
+  const t = getTweet(id)
+  if (!t) return
+  t.reposted = on
   upsertTweet(t)
 }
 
@@ -174,7 +195,7 @@ function rowToItem(r: ItemRow): EditionItem {
     reason: r.reason,
     priorityAccount: !!r.priority,
     rank: r.rank,
-    vote: r.vote as 1 | -1 | 0,
+    vote: r.vote as Vote,
     opened: !!r.opened,
     replied: !!r.replied
   }
@@ -195,6 +216,11 @@ export function getEditionByDate(date: string): Edition | null {
   const e = db.prepare('SELECT id FROM editions WHERE date = ?').get(date) as { id: number } | undefined
   return e ? getEdition(e.id) : null
 }
+/** The most recent daily edition, whatever its date. */
+export function getLatestEdition(): Edition | null {
+  const e = db.prepare(`SELECT id FROM editions WHERE date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]' ORDER BY date DESC LIMIT 1`).get() as { id: number } | undefined
+  return e ? getEdition(e.id) : null
+}
 export function listEditions(): EditionSummary[] {
   const rows = db
     .prepare(
@@ -208,7 +234,7 @@ export function listEditions(): EditionSummary[] {
     candidateCount: r.candidate_count, priorityCount: r.priority_count, votesCast: r.votes
   }))
 }
-export function setVote(editionId: number, tweetId: string, vote: 1 | -1 | 0): void {
+export function setVote(editionId: number, tweetId: string, vote: Vote): void {
   db.prepare('UPDATE edition_items SET vote = ?, voted_at = ? WHERE edition_id = ? AND tweet_id = ?').run(vote, new Date().toISOString(), editionId, tweetId)
 }
 export function setOpened(editionId: number, tweetId: string): void {
@@ -221,7 +247,7 @@ export function setReplied(tweetId: string): void {
 /** Everything the user has ever voted on or interacted with, for learning. */
 export interface VoteRecord {
   tweet: Tweet
-  vote: 1 | -1 | 0
+  vote: Vote
   opened: boolean
   replied: boolean
   heuristic: number
@@ -229,7 +255,7 @@ export interface VoteRecord {
   final: number
   source: string
 }
-export function getVoteHistory(limit = 2000): VoteRecord[] {
+export function getVoteHistory(limit = 20000): VoteRecord[] {
   const rows = db
     .prepare(
       `SELECT ei.*, t.json FROM edition_items ei JOIN tweets t ON t.id = ei.tweet_id
@@ -238,14 +264,14 @@ export function getVoteHistory(limit = 2000): VoteRecord[] {
     )
     .all(limit) as ItemRow[]
   return rows.map((r) => ({
-    tweet: JSON.parse(r.json) as Tweet, vote: r.vote as 1 | -1 | 0, opened: !!r.opened, replied: !!r.replied,
+    tweet: JSON.parse(r.json) as Tweet, vote: r.vote as Vote, opened: !!r.opened, replied: !!r.replied,
     heuristic: r.heuristic, claude: r.claude, final: r.final, source: r.source
   }))
 }
 export interface ItemDetail {
   editionId: number
   editionDate: string
-  vote: 1 | -1 | 0
+  vote: Vote
   opened: boolean
   replied: boolean
   heuristic: number
@@ -256,7 +282,7 @@ export interface ItemDetail {
 }
 interface DetailRow extends ItemRow { edition_id: number; date: string; json: string }
 const toDetail = (r: DetailRow): ItemDetail => ({
-  editionId: r.edition_id, editionDate: r.date, vote: r.vote as 1 | -1 | 0, opened: !!r.opened, replied: !!r.replied,
+  editionId: r.edition_id, editionDate: r.date, vote: r.vote as Vote, opened: !!r.opened, replied: !!r.replied,
   heuristic: r.heuristic, claude: r.claude, final: r.final, source: r.source, tweet: JSON.parse(r.json) as Tweet
 })
 const DETAIL_SQL = 'SELECT ei.*, e.date, t.json FROM edition_items ei JOIN editions e ON e.id = ei.edition_id JOIN tweets t ON t.id = ei.tweet_id'
@@ -308,12 +334,12 @@ export function restoreInteractions(records: { tweetId: string; vote: number; op
 }
 
 /** The vote on a post from whichever edition holds it, 0 when none. */
-export function getVote(tweetId: string): 1 | -1 | 0 {
+export function getVote(tweetId: string): Vote {
   const r = db.prepare('SELECT vote FROM edition_items WHERE tweet_id = ? AND vote != 0 LIMIT 1').get(tweetId) as { vote: number } | undefined
-  return (r?.vote ?? 0) as 1 | -1 | 0
+  return (r?.vote ?? 0) as Vote
 }
 /** Vote on any post, in an edition or not: replies, quoted posts, thread parts. Posts outside an edition go into a hidden holding edition so the learner and backups see them like any other. */
-export function voteOnTweet(tweet: Tweet, vote: 1 | -1 | 0): { editionId: number } {
+export function voteOnTweet(tweet: Tweet, vote: Vote): { editionId: number } {
   const tx = db.transaction(() => {
     upsertTweet(tweet)
     const existing = db.prepare('SELECT edition_id FROM edition_items WHERE tweet_id = ? ORDER BY edition_id LIMIT 1').get(tweet.id) as { edition_id: number } | undefined
@@ -330,6 +356,39 @@ export function voteOnTweet(tweet: Tweet, vote: 1 | -1 | 0): { editionId: number
     return { editionId: extraId }
   })
   return tx()
+}
+
+// ---------- your history (likes and replies from the archive or the API) ----------
+export interface HistoryRecord { tweet: Tweet; vote: 1 | 0; replied: boolean; at: string }
+export const HISTORY_SOURCE = 'history'
+
+/** Files past likes and replies as hidden records the scorers learn from. Never overwrites a post we already know, nor a vote already cast. */
+export function importHistory(records: HistoryRecord[]): void {
+  const tx = db.transaction(() => {
+    db.prepare("INSERT INTO editions(date, built_at, notes) VALUES('history', ?, 'Your likes and replies, imported') ON CONFLICT(date) DO NOTHING").run(new Date().toISOString())
+    const histId = (db.prepare("SELECT id FROM editions WHERE date = 'history'").get() as { id: number }).id
+    const known = db.prepare('SELECT 1 FROM tweets WHERE id = ?')
+    const item = db.prepare('SELECT edition_id, vote, replied FROM edition_items WHERE tweet_id = ? ORDER BY edition_id LIMIT 1')
+    const insert = db.prepare(
+      `INSERT INTO edition_items(edition_id, tweet_id, rank, source, heuristic, claude, final, category, reason, priority, vote, voted_at, opened, replied)
+       VALUES(?, ?, 0, '${HISTORY_SOURCE}', 0.5, NULL, 0.5, 'interesting', 'from your history', 0, ?, ?, 0, ?)`
+    )
+    const update = db.prepare('UPDATE edition_items SET vote = CASE WHEN vote = 0 THEN ? ELSE vote END, replied = MAX(replied, ?), voted_at = COALESCE(voted_at, ?) WHERE edition_id = ? AND tweet_id = ?')
+    for (const r of records) {
+      if (!known.get(r.tweet.id)) upsertTweet(r.tweet)
+      const ex = item.get(r.tweet.id) as { edition_id: number; vote: number; replied: number } | undefined
+      if (ex) update.run(r.vote, r.replied ? 1 : 0, r.at, ex.edition_id, r.tweet.id)
+      else insert.run(histId, r.tweet.id, r.vote, r.at, r.replied ? 1 : 0)
+    }
+  })
+  tx()
+}
+export function hasPositiveVote(tweetId: string): boolean {
+  return !!db.prepare('SELECT 1 FROM edition_items WHERE tweet_id = ? AND vote = 1 LIMIT 1').get(tweetId)
+}
+export function historyCounts(): { likes: number; replies: number } {
+  const r = db.prepare(`SELECT SUM(vote = 1) AS likes, SUM(replied = 1) AS replies FROM edition_items WHERE source = '${HISTORY_SOURCE}'`).get() as { likes: number | null; replies: number | null }
+  return { likes: r.likes ?? 0, replies: r.replies ?? 0 }
 }
 
 /** Tweet ids already shown in any edition (so we never re-serve them). */

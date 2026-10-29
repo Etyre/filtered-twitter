@@ -1,6 +1,6 @@
 // Parsers for X's internal GraphQL / REST JSON. We deep-walk responses for tweet
 // objects rather than relying on exact timeline shapes, which change often.
-import type { Author, Media, Notification, Poll, Tweet } from '@shared/types'
+import type { Author, CommunityNote, Media, Notification, Poll, Tweet } from '@shared/types'
 
 type Any = Record<string, unknown>
 const isObj = (v: unknown): v is Any => !!v && typeof v === 'object' && !Array.isArray(v)
@@ -52,7 +52,11 @@ function parseMedia(legacy: Any): Media[] {
         videoUrl = variants.length ? str(variants[0].url) : undefined
       }
       const sizes = isObj(m.original_info) ? (m.original_info as Any) : {}
-      return { type: type || 'photo', url, videoUrl, width: num(sizes.width) || undefined, height: num(sizes.height) || undefined }
+      let width = num(sizes.width) || undefined
+      let height = num(sizes.height) || undefined
+      const ar = isObj(m.video_info) ? (m.video_info as Any).aspect_ratio : undefined
+      if ((!width || !height) && Array.isArray(ar) && ar.length === 2) [width, height] = [num(ar[0]) || undefined, num(ar[1]) || undefined]
+      return { type: type || 'photo', url, videoUrl, width, height }
     })
     .filter((m): m is Media => !!m)
 }
@@ -112,6 +116,27 @@ function expandText(text: string, legacy: Any, media: Media[]): { text: string; 
   return { text: out.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').trim(), urls }
 }
 
+/** The Community Note X shows under a post, when one is currently rated helpful. Shortened links are replaced by their targets. */
+function parseCommunityNote(r: Any): CommunityNote | undefined {
+  const pivot = isObj(r.birdwatch_pivot) ? (r.birdwatch_pivot as Any) : null
+  if (!pivot) return undefined
+  const sub = isObj(pivot.subtitle) ? (pivot.subtitle as Any) : null
+  let text = str(sub?.text) || str(pivot.shorttitle) || str(pivot.title)
+  if (!text) return undefined
+  const ents = sub && Array.isArray(sub.entities) ? (sub.entities as Any[]) : []
+  // Indices count code points; replace from the end so earlier offsets stay valid.
+  const chars = [...text]
+  const spans = ents
+    .map((e) => ({ from: num(e.fromIndex), to: num(e.toIndex), url: isObj(e.ref) ? str((e.ref as Any).url) : '' }))
+    .filter((e) => e.url && e.to > e.from && e.to <= chars.length)
+    .sort((a, b) => b.from - a.from)
+  for (const sp of spans) chars.splice(sp.from, sp.to - sp.from, sp.url)
+  text = chars.join('')
+  const noteId = isObj(pivot.note) ? str((pivot.note as Any).rest_id) : ''
+  const url = str(pivot.destinationUrl).replace(/^https?:\/\/twitter\.com/, 'https://x.com') || (noteId ? `https://x.com/i/birdwatch/n/${noteId}` : undefined)
+  return { text, url: url || undefined }
+}
+
 /** Parse a single tweet result object (Tweet / TweetWithVisibilityResults). */
 export function parseTweet(input: unknown, depth = 0): Tweet | null {
   if (!isObj(input) || depth > 3) return null
@@ -169,7 +194,8 @@ export function parseTweet(input: unknown, depth = 0): Tweet | null {
     poll,
     urls: expanded.urls,
     lang: str(legacy.lang) || undefined,
-    liked: !!legacy.favorited
+    liked: !!legacy.favorited,
+    communityNote: parseCommunityNote(r)
   }
 }
 

@@ -41,10 +41,23 @@ export const DEFAULTS: Settings = {
   browsingFollows: [],
   lastFollowSyncDate: null,
   backupDir: '',
-  lastBackupAt: null
+  lastBackupAt: null,
+  ordering: 'priority',
+  autoTranslate: false,
+  notifyEveryMinutes: 60,
+  historySync: true,
+  lastHistorySyncDate: null,
+  historyImportedAt: null,
+  bskyEnabled: false,
+  bskyHandle: '',
+  bskyDid: '',
+  hasBskyPassword: false,
+  bskyPriorityHandles: [],
+  bskySearchQueries: ['"AI safety"', '"frontier model"', 'Anthropic', 'OpenAI', 'DeepMind'],
+  bskyPages: 5
 }
 
-const SECRET_KEYS: (keyof Secrets)[] = ['anthropicApiKey', 'xConsumerKey', 'xConsumerSecret', 'xAccessToken', 'xAccessSecret']
+const SECRET_KEYS: (keyof Secrets)[] = ['anthropicApiKey', 'xConsumerKey', 'xConsumerSecret', 'xAccessToken', 'xAccessSecret', 'bskyAppPassword', 'bskySession']
 
 export function readSecret(key: keyof Secrets): string | null {
   const blob = getSecretBlob(key)
@@ -75,19 +88,27 @@ export function loadSettings(): Settings {
   const s: Settings = { ...DEFAULTS, ...stored }
   s.hasAnthropicKey = !!readSecret('anthropicApiKey')
   s.hasXApiKeys = !!(readSecret('xConsumerKey') && readSecret('xConsumerSecret') && readSecret('xAccessToken') && readSecret('xAccessSecret'))
+  s.hasBskyPassword = !!readSecret('bskyAppPassword')
   return s
 }
 
 export function saveSettings(patch: Partial<Settings>): Settings {
   const current = loadSettings()
   const next: Settings = { ...current, ...patch }
-  const { hasAnthropicKey: _a, hasXApiKeys: _b, ...persist } = next
+  const { hasAnthropicKey: _a, hasXApiKeys: _b, hasBskyPassword: _c, ...persist } = next
   void _a
   void _b
+  void _c
   setSetting('settings', JSON.stringify(persist))
   return loadSettings()
 }
 
 export function normalizeHandle(h: string): string {
   return h.trim().replace(/^@/, '').replace(/^https?:\/\/(x|twitter)\.com\//i, '').replace(/\/.*$/, '').toLowerCase()
+}
+
+/** A Bluesky handle as the API wants it: no @, no URL, lowercase; a bare name gets .bsky.social. */
+export function normalizeBskyHandle(h: string): string {
+  const x = h.trim().replace(/^@/, '').replace(/^https?:\/\/bsky\.app\/profile\//i, '').replace(/\/.*$/, '').toLowerCase()
+  return x && !x.includes('.') ? `${x}.bsky.social` : x
 }

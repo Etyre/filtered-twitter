@@ -24,8 +24,29 @@ export interface Poll {
   final: boolean // counts are final (poll closed)
 }
 
+/** Where a post lives. X posts have numeric ids; Bluesky posts use their at:// URI as id. */
+export type Network = 'x' | 'bsky'
+
+/** A link preview a post carries (Bluesky attaches these to posts as cards). */
+export interface LinkCard {
+  url: string
+  title: string
+  description: string
+  image?: string
+}
+
+/** A Community Note X is showing under a post: context other readers rated helpful. */
+export interface CommunityNote {
+  text: string
+  url?: string
+}
+
 export interface Tweet {
   id: string
+  /** Absent means X. */
+  network?: Network
+  /** Bluesky: the content hash the API needs to like, repost, reply to, or quote this post. */
+  cid?: string
   conversationId: string
   text: string
   createdAt: string // ISO
@@ -45,6 +66,12 @@ export interface Tweet {
   urls: { short: string; expanded: string; display: string }[]
   lang?: string
   liked?: boolean
+  /** Reposted from your real account, through this app. */
+  reposted?: boolean
+  /** English translation, when the post is in another language and was translated. */
+  translation?: string
+  card?: LinkCard
+  communityNote?: CommunityNote
 }
 
 export type Source = 'priority' | 'following' | 'search' | 'foryou' | 'notification'
@@ -61,9 +88,12 @@ export interface ScoredTweet {
   priorityAccount: boolean
 }
 
+/** A vote: 2 is a super upvote for a post that was extremely valuable, 1 an upvote (also a like), -1 a downvote. */
+export type Vote = 2 | 1 | -1 | 0
+
 export interface EditionItem extends ScoredTweet {
   rank: number
-  vote: 1 | -1 | 0
+  vote: Vote
   opened: boolean
   replied: boolean
 }
@@ -146,6 +176,18 @@ export interface DmSummary {
   error?: string
 }
 
+/** One turn of a Talk-to-Claude conversation about a post. */
+export interface ChatMessage {
+  role: 'user' | 'assistant'
+  text: string
+}
+
+/** A piece of a streamed reply: text to append, or a note on what Claude is doing (searching, reading a page). */
+export interface ChatDelta {
+  text?: string
+  status?: string
+}
+
 export interface Settings {
   dailyLimit: number
   buildHour: number // 0-23 local
@@ -177,7 +219,35 @@ export interface Settings {
   /** Where votes are backed up; empty means the default (iCloud Drive if present, else Documents). */
   backupDir: string
   lastBackupAt: string | null
+  /** How the edition is laid out: priority accounts first then by score, oldest first, or newest first. */
+  ordering: Ordering
+  /** Translate posts not in English while building the edition. Needs the Anthropic key. */
+  autoTranslate: boolean
+  /** How often to check for replies and mentions, in minutes; 0 means only by hand. */
+  notifyEveryMinutes: number
+  /** Pull recent likes and replies from your real account daily, through the API, as training signal. */
+  historySync: boolean
+  lastHistorySyncDate: string | null
+  historyImportedAt: string | null
+  /** Bluesky, read and written through its API with your own account; posts join the same edition. */
+  bskyEnabled: boolean
+  bskyHandle: string
+  bskyDid: string
+  hasBskyPassword: boolean
+  bskyPriorityHandles: string[]
+  bskySearchQueries: string[]
+  /** Pages of the Bluesky following feed to read (100 posts each). */
+  bskyPages: number
 }
+
+export interface HistoryStatus {
+  importedAt: string | null
+  lastSyncDate: string | null
+  likes: number
+  replies: number
+}
+
+export type Ordering = 'priority' | 'chronological' | 'newest'
 
 /** One vote, open, or reply, recorded with the post it was about so a backup stands on its own. */
 export interface Interaction {
@@ -186,7 +256,7 @@ export interface Interaction {
   editionId: number
   editionDate: string
   tweetId: string
-  vote: 1 | -1 | 0
+  vote: Vote
   opened: boolean
   replied: boolean
   heuristic: number
@@ -210,6 +280,9 @@ export interface Secrets {
   xConsumerSecret?: string
   xAccessToken?: string
   xAccessSecret?: string
+  bskyAppPassword?: string
+  /** The Bluesky session tokens, kept by the app itself so it rarely has to log in again. */
+  bskySession?: string
 }
 
 export interface ScorerStats {
@@ -235,6 +308,8 @@ export interface SessionStatus {
   checkedAt: string
 }
 
+export type PostNetwork = Network | 'both'
+
 export interface PostResult {
   ok: boolean
   ids: string[]
@@ -257,8 +332,13 @@ export interface Api {
   logout(): Promise<SessionStatus>
   checkIp(): Promise<IpCheck>
   refreshFollowing(): Promise<Settings>
+  /** Picks the X data archive (zip or folder) and files its likes and replies as history. */
+  importArchive(): Promise<{ ok: boolean; likes?: number; replies?: number; error?: string }>
+  syncHistory(): Promise<{ ok: boolean; likes?: number; replies?: number; error?: string }>
+  getHistoryStatus(): Promise<HistoryStatus>
   followSyncNow(): Promise<{ followed: string[]; error?: string }>
   verifyXApi(): Promise<{ ok: boolean; handle?: string; error?: string }>
+  verifyBsky(): Promise<{ ok: boolean; handle?: string; error?: string }>
 
   getTodayEdition(): Promise<Edition | null>
   getEdition(id: number): Promise<Edition | null>
@@ -266,14 +346,18 @@ export interface Api {
   buildEdition(force: boolean): Promise<Edition | null>
   getProgress(): Promise<Progress | null>
 
-  vote(editionId: number, tweetId: string, vote: 1 | -1 | 0): Promise<{ ok: boolean; likeError?: string }>
+  vote(editionId: number, tweetId: string, vote: Vote): Promise<{ ok: boolean; likeError?: string }>
   repost(tweetId: string): Promise<{ ok: boolean; error?: string }>
+  /** Takes back a repost made from your account. */
+  unrepost(tweetId: string): Promise<{ ok: boolean; error?: string }>
   /** Vote on any post, whether or not it is in an edition. */
-  voteOnTweet(tweet: Tweet, vote: 1 | -1 | 0): Promise<{ ok: boolean; likeError?: string }>
-  getVote(tweetId: string): Promise<1 | -1 | 0>
+  voteOnTweet(tweet: Tweet, vote: Vote): Promise<{ ok: boolean; likeError?: string }>
+  getVote(tweetId: string): Promise<Vote>
   markOpened(editionId: number, tweetId: string): Promise<void>
   getThread(tweetId: string): Promise<Thread>
   getTweet(tweetId: string, cachedOnly?: boolean): Promise<Tweet | null> // cachedOnly: never load a page, just what is already known
+  /** Translates a post into English with Claude and returns the updated post. */
+  translateTweet(tweetId: string): Promise<Tweet | null>
 
   getNotifications(refresh: boolean): Promise<NotificationSummary>
   markNotificationsRead(ids: string[]): Promise<void>
@@ -281,7 +365,11 @@ export interface Api {
   getDms(refresh: boolean): Promise<DmSummary>
   sendDm(conversationId: string, text: string): Promise<{ ok: boolean; error?: string }>
 
-  postThread(texts: string[], replyToId?: string): Promise<PostResult>
+  /** quoteId: the first post quotes that post. network: where a fresh post goes; a reply or quote follows the post it answers. */
+  postThread(texts: string[], replyToId?: string, quoteId?: string, network?: PostNetwork): Promise<PostResult>
+  /** Asks Claude about a post and its discussion; the reply streams through onChatDelta under requestId, and arrives whole here. */
+  askClaude(tweetId: string, messages: ChatMessage[], requestId: string): Promise<{ ok: boolean; text?: string; error?: string }>
+  stopClaude(requestId: string): Promise<void>
   getScorerStats(): Promise<ScorerStats>
   getBackupStatus(): Promise<BackupStatus>
   backupNow(): Promise<{ ok: boolean; error?: string }>
@@ -290,5 +378,8 @@ export interface Api {
   openExternal(url: string): Promise<void>
 
   onProgress(cb: (p: Progress) => void): () => void
+  onChatDelta(cb: (requestId: string, delta: ChatDelta) => void): () => void
+  onNavigate(cb: (dir: 'back' | 'forward') => void): () => void // a trackpad swipe asked to go back or forward
   onThreadUpdated(cb: (t: Thread) => void): () => void // a stored discussion was refreshed from X
+  onNotificationsUpdated(cb: () => void): () => void // the scheduled check found something new
 }

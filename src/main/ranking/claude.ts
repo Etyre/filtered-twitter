@@ -31,25 +31,31 @@ export interface ClaudeScorerOpts {
 }
 
 function fmtTweet(t: Tweet, extra = ''): string {
-  const parts = [`[${t.id}] @${t.author.handle} (${t.author.name})${extra}`]
+  const parts = [`[${t.id}] @${t.author.handle} (${t.author.name})${t.network === 'bsky' ? ' [Bluesky]' : ''}${extra}`]
   if (t.retweetedBy) parts[0] += ` [reposted by @${t.retweetedBy.handle}]`
   parts.push(t.text.replace(/\s+/g, ' ').slice(0, 700))
   if (t.quoted) parts.push(`  ↳ quoting @${t.quoted.author.handle}: ${t.quoted.text.replace(/\s+/g, ' ').slice(0, 240)}`)
+  if (t.communityNote) parts.push(`  ⚠ Community Note on this post: ${t.communityNote.text.replace(/\s+/g, ' ').slice(0, 300)}`)
   const stats = `  (${t.likes} likes, ${t.reposts} reposts, ${t.replies} replies${t.media.length ? ', has media' : ''}${t.inReplyToId ? ', is a reply' : ''})`
   parts.push(stats)
   return parts.join('\n')
 }
 
 function buildSystem(opts: ClaudeScorerOpts): string {
-  const ups = opts.history.filter((h) => h.vote > 0 || h.replied).slice(0, 40)
-  const downs = opts.history.filter((h) => h.vote < 0).slice(0, 40)
-  const ex = (rows: VoteRecord[]): string => rows.map((h) => `- @${h.tweet.author.handle}: ${h.tweet.text.replace(/\s+/g, ' ').slice(0, 200)}`).join('\n')
+  const usable = opts.history.filter((h) => h.tweet.text.trim())
+  const own = usable.filter((h) => h.source !== 'history') // votes cast here come first; imported likes fill the rest
+  const imported = usable.filter((h) => h.source === 'history')
+  const supers = own.filter((h) => h.vote >= 2).slice(0, 25)
+  const ups = [...own, ...imported].filter((h) => (h.vote === 1 || h.replied) && h.vote < 2).slice(0, 40)
+  const downs = own.filter((h) => h.vote < 0).slice(0, 40)
+  const ex = (rows: VoteRecord[]): string => rows.map((h) => `- ${h.tweet.author.handle ? '@' + h.tweet.author.handle : 'someone'}: ${h.tweet.text.replace(/\s+/g, ' ').slice(0, 200)}`).join('\n')
   return [
-    `You curate a strictly limited daily reading list of posts from X (Twitter) for one person. They want to stay engaged with the world without being addicted, so the list must earn every slot: important things they would regret missing, and small things they would genuinely enjoy. Everything else is skipped.`,
+    `You curate a strictly limited daily reading list of posts from X (Twitter) and Bluesky for one person. Judge posts from the two networks by the same standard; Bluesky posts carry a [Bluesky] mark and their like counts run lower, which is not a mark against them. They want to stay engaged with the world without being addicted, so the list must earn every slot: important things they would regret missing, and small things they would genuinely enjoy. Everything else is skipped.`,
     ``,
     `## Their interest profile`,
     opts.profile.trim(),
     opts.priorityHandles.length ? `\nAccounts they explicitly prioritize: ${opts.priorityHandles.map((h) => '@' + h).join(', ')}` : '',
+    supers.length ? `\n## Posts they marked as extremely valuable (the strongest positive examples; more like these)\n${ex(supers)}` : '',
     ups.length ? `\n## Posts they upvoted or replied to recently (positive examples)\n${ex(ups)}` : '',
     downs.length ? `\n## Posts they downvoted recently (negative examples)\n${ex(downs)}` : '',
     ``,
@@ -60,6 +66,7 @@ function buildSystem(opts: ClaudeScorerOpts): string {
     `- 30-59: fine but forgettable.`,
     `- 0-29: noise, bait, repetitive, off-topic, or low effort.`,
     `Categories: breaking_news (big consequential news), interesting (substantive or delightful), discourse (ongoing debate they may want to weigh in on), personal (updates from people they know or follow closely), skip.`,
+    `A Community Note means readers rated the post misleading or missing context; weigh that, though a corrected claim can still be worth seeing when the story itself matters.`,
     `Judge content, not popularity. Many candidates will restate the same news; score the best-sourced one highest and the restatements low. Return one rating per candidate id, no more and no fewer.`
   ].join('\n')
 }

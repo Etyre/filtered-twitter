@@ -100,9 +100,10 @@ export async function following(userId: string): Promise<RawUser[]> {
   return out
 }
 
-export async function createPost(text: string, replyToId?: string): Promise<string> {
+export async function createPost(text: string, replyToId?: string, quoteId?: string): Promise<string> {
   const body: Record<string, unknown> = { text }
   if (replyToId) body.reply = { in_reply_to_tweet_id: replyToId }
+  if (quoteId) body.quote_tweet_id = quoteId
   const r = await call<{ data: { id: string } }>('POST', 'https://api.x.com/2/tweets', body)
   return r.data.id
 }
@@ -118,6 +119,9 @@ export async function unlike(userId: string, tweetId: string): Promise<void> {
 export async function retweet(userId: string, tweetId: string): Promise<void> {
   await call('POST', `https://api.x.com/2/users/${userId}/retweets`, { tweet_id: tweetId })
 }
+export async function unretweet(userId: string, tweetId: string): Promise<void> {
+  await call('DELETE', `https://api.x.com/2/users/${userId}/retweets/${tweetId}`)
+}
 
 // ---------- Direct messages (requires a plan that includes DM endpoints) ----------
 export interface RawDmEvent {
@@ -131,7 +135,7 @@ export interface RawDmEvent {
   entities?: { urls?: { url: string; expanded_url?: string; display_url?: string }[] }
   referenced_tweets?: { type: string; id: string }[]
 }
-export interface RawUser { id: string; username: string; name: string; profile_image_url?: string }
+export interface RawUser { id: string; username: string; name: string; profile_image_url?: string; verified?: boolean; public_metrics?: { followers_count?: number } }
 
 let log: (m: string) => void = () => {}
 export function setLogger(fn: (m: string) => void): void {
@@ -155,4 +159,48 @@ export async function dmEvents(paginationToken?: string): Promise<{ events: RawD
 
 export async function sendDm(conversationId: string, text: string): Promise<void> {
   await call('POST', `https://api.x.com/2/dm_conversations/${conversationId}/messages`, { text })
+}
+
+// ---------- Your own history: likes and posts, read through the API ----------
+export interface RawTweet {
+  id: string
+  text: string
+  created_at?: string
+  author_id?: string
+  conversation_id?: string
+  lang?: string
+  public_metrics?: { like_count?: number; retweet_count?: number; reply_count?: number; quote_count?: number; impression_count?: number }
+  referenced_tweets?: { type: 'replied_to' | 'quoted' | 'retweeted'; id: string }[]
+  entities?: { urls?: { url: string; expanded_url?: string; display_url?: string }[] }
+}
+export interface TweetPage { tweets: RawTweet[]; users: RawUser[]; referenced: RawTweet[]; next?: string }
+
+const TWEET_FIELDS = 'id,text,created_at,author_id,conversation_id,lang,public_metrics,referenced_tweets,entities'
+const TWEET_EXPANSIONS = 'author_id,referenced_tweets.id,referenced_tweets.id.author_id'
+const USER_FIELDS = 'id,username,name,profile_image_url,verified,public_metrics'
+
+async function tweetPage(url: URL): Promise<TweetPage> {
+  url.searchParams.set('tweet.fields', TWEET_FIELDS)
+  url.searchParams.set('expansions', TWEET_EXPANSIONS)
+  url.searchParams.set('user.fields', USER_FIELDS)
+  const r = await call<{ data?: RawTweet[]; includes?: { users?: RawUser[]; tweets?: RawTweet[] }; meta?: { next_token?: string } }>('GET', url.toString())
+  return { tweets: r.data ?? [], users: r.includes?.users ?? [], referenced: r.includes?.tweets ?? [], next: r.meta?.next_token }
+}
+
+/** One page (up to 100) of the posts a user liked, newest first. No since_id on this endpoint: callers stop at the first known one. */
+export async function likedTweets(userId: string, token?: string): Promise<TweetPage> {
+  const u = new URL(`https://api.x.com/2/users/${userId}/liked_tweets`)
+  u.searchParams.set('max_results', '100')
+  if (token) u.searchParams.set('pagination_token', token)
+  return tweetPage(u)
+}
+
+/** One page (up to 100) of a user's own posts and replies, newest first, optionally only after a given id. */
+export async function userTweets(userId: string, sinceId?: string, token?: string): Promise<TweetPage> {
+  const u = new URL(`https://api.x.com/2/users/${userId}/tweets`)
+  u.searchParams.set('max_results', '100')
+  u.searchParams.set('exclude', 'retweets')
+  if (sinceId) u.searchParams.set('since_id', sinceId)
+  if (token) u.searchParams.set('pagination_token', token)
+  return tweetPage(u)
 }

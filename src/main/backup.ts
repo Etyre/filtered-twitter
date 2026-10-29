@@ -6,7 +6,7 @@ import { BrowserWindow, dialog } from 'electron'
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
-import type { BackupStatus, Interaction, Tweet } from '@shared/types'
+import type { BackupStatus, Interaction, Tweet, Vote } from '@shared/types'
 import * as db from './db'
 import { loadSettings, saveSettings } from './settings'
 
@@ -115,7 +115,7 @@ export async function restoreFromFile(parent: BrowserWindow | undefined, log: (m
 }
 
 /** Build the record for one interaction from what the database knows about it. */
-export function interactionRecord(kind: Interaction['kind'], editionId: number | null, tweetId: string, vote: 1 | -1 | 0): Interaction | null {
+export function interactionRecord(kind: Interaction['kind'], editionId: number | null, tweetId: string, vote: Vote): Interaction | null {
   const row = editionId !== null ? db.getItem(editionId, tweetId) : db.getItemsForTweet(tweetId)[0]
   if (!row) return null
   return {

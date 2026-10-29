@@ -1,16 +1,46 @@
 import type { ReplyNode, Thread, Tweet } from '@shared/types'
 import { getCachedThread, getTweet, setCachedThread, upsertTweets } from './db'
 import type { XBrowser } from './x/browser'
+import { isBskyId } from '@shared/net'
+import * as bsky from './bsky/client'
+import { autoTranslateOn, translateTweets } from './translate'
 
 const inFlight = new Map<string, Promise<Thread>>()
 
-/** Loads a discussion from X, one load per post at a time, and stores it. */
-export function loadThread(browser: XBrowser, tweetId: string): Promise<Thread> {
+let notify: ((t: Thread) => void) | null = null
+/** Who to tell when a stored discussion changes after it was handed out (its translations arriving, say). */
+export function setThreadNotifier(fn: (t: Thread) => void): void {
+  notify = fn
+}
+
+/** Every post in a discussion: the post, what it answers, and the replies at every depth. */
+function allTweets(t: Thread): Tweet[] {
+  const out: Tweet[] = [t.focal, ...t.ancestors]
+  const walk = (nodes: ReplyNode[]): void => nodes.forEach((n) => { out.push(n.tweet); walk(n.children) })
+  walk(t.replies)
+  return out
+}
+
+/** Translates the non-English posts of a discussion in the background, then stores and announces the updated copy. */
+function translateThread(id: string, t: Thread, log: (m: string) => void): void {
+  if (!autoTranslateOn()) return
+  void translateTweets(allTweets(t), log)
+    .then((n) => {
+      if (!n) return
+      setCachedThread(id, t)
+      notify?.(t)
+    })
+    .catch((e) => log(`thread translate ${id} failed: ${String(e)}`))
+}
+
+/** Loads a discussion from X or Bluesky, one load per post at a time, and stores it. Translations, when wanted, follow on their own. */
+export function loadThread(browser: XBrowser, tweetId: string, log: (m: string) => void = () => {}): Promise<Thread> {
   let p = inFlight.get(tweetId)
   if (!p) {
-    p = fetchThread(browser, tweetId)
+    p = (isBskyId(tweetId) ? bsky.thread(tweetId) : fetchThread(browser, tweetId))
       .then((t) => {
         setCachedThread(tweetId, t)
+        translateThread(tweetId, t, log)
         return t
       })
       .finally(() => inFlight.delete(tweetId))
@@ -29,7 +59,7 @@ export async function prefetchThreads(browser: XBrowser, tweetIds: string[], log
     const hit = getCachedThread(id)
     if (hit && Date.now() - new Date(hit.fetchedAt).getTime() < 6 * 3600_000) continue
     try {
-      await loadThread(browser, id)
+      await loadThread(browser, id, log)
       done++
     } catch (e) {
       log(`prefetch ${id} failed: ${String(e)}`)

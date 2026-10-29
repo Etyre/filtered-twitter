@@ -1,16 +1,19 @@
 import type React from 'react'
 import { useEffect, useState } from 'react'
-import type { Edition, EditionSummary } from '@shared/types'
+import type { Edition, EditionSummary, Settings } from '@shared/types'
 import TweetCard from './TweetCard'
+import { orderItems } from '../order'
 
 export default function ArchiveView({
   selectedId,
   onSelect,
-  onOpenThread
+  onOpenThread,
+  settings
 }: {
   selectedId: number | null
   onSelect: (id: number | null) => void
   onOpenThread: (tweetId: string, editionId: number) => void
+  settings: Settings | null
 }): React.JSX.Element {
   const [list, setList] = useState<EditionSummary[]>([])
   const [edition, setEdition] = useState<Edition | null>(null)
@@ -33,7 +36,7 @@ export default function ArchiveView({
           </div>
         </header>
         <div className="cards">
-          {edition.items.map((item) => (
+          {orderItems(edition.items, settings?.ordering ?? 'priority').map((item) => (
             <TweetCard key={item.tweet.id} item={item} editionId={edition.id} onOpenThread={(id) => onOpenThread(id, edition.id)} onChange={() => {}} />
           ))}
         </div>

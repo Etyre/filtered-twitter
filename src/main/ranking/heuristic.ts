@@ -39,18 +39,25 @@ export function trainHeuristic(history: VoteRecord[]): HeuristicModel {
     if (h.replied) v = Math.max(v, 1)
     else if (h.opened && v === 0) v = 0.4
     if (v === 0) continue
+    let w = h.source === 'history' ? 0.5 : 1 // imported likes and replies count half: they come from feed habits, not from this edition
+    if (v >= 2) {
+      w *= 2 // a super upvote: the post was extremely valuable, so it teaches twice as hard
+      v = 1
+    }
     const handle = h.tweet.author.handle.toLowerCase()
-    const a = authorSum.get(handle) ?? { s: 0, n: 0 }
-    a.s += v
-    a.n += 1
-    authorSum.set(handle, a)
+    if (handle) {
+      const a = authorSum.get(handle) ?? { s: 0, n: 0 }
+      a.s += v * w
+      a.n += w
+      authorSum.set(handle, a)
+    }
     const toks = new Set(tokenize(h.tweet.text))
     if (v > 0) {
-      pos++
-      toks.forEach((t) => tokPos.set(t, (tokPos.get(t) ?? 0) + 1))
+      pos += w
+      toks.forEach((t) => tokPos.set(t, (tokPos.get(t) ?? 0) + w))
     } else {
-      neg++
-      toks.forEach((t) => tokNeg.set(t, (tokNeg.get(t) ?? 0) + 1))
+      neg += w
+      toks.forEach((t) => tokNeg.set(t, (tokNeg.get(t) ?? 0) + w))
     }
   }
   const authorScore = new Map<string, number>()

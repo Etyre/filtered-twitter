@@ -14,6 +14,7 @@ function label(h: VoteRecord): number | null {
 
 export function fitWeights(history: VoteRecord[], prior: Weights): Weights {
   const rows = history
+    .flatMap((h) => Array<VoteRecord>(h.vote >= 2 ? 2 : 1).fill(h)) // a super upvote weighs double
     .map((h) => ({ y: label(h), h: h.heuristic, c: h.claude }))
     .filter((r): r is { y: number; h: number; c: number } => r.y !== null && r.c !== null && r.c !== undefined)
   const pos = rows.filter((r) => r.y === 1).length

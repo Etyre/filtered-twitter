@@ -1,6 +1,6 @@
 import type React from 'react'
 import { useEffect, useState } from 'react'
-import type { BackupStatus, IpCheck, ScorerStats, Secrets, SessionStatus, Settings } from '@shared/types'
+import type { BackupStatus, HistoryStatus, IpCheck, ScorerStats, Secrets, SessionStatus, Settings } from '@shared/types'
 
 export default function SettingsView({
   settings,
@@ -17,6 +17,7 @@ export default function SettingsView({
   const [secrets, setSecrets] = useState<Secrets>({})
   const [stats, setStats] = useState<ScorerStats | null>(null)
   const [backup, setBackup] = useState<BackupStatus | null>(null)
+  const [history, setHistory] = useState<HistoryStatus | null>(null)
   const [saved, setSaved] = useState<string | null>(null)
   const [ip, setIp] = useState<IpCheck | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
@@ -24,14 +25,19 @@ export default function SettingsView({
   // Raw text for the list fields, so typing a newline is not parsed away mid-keystroke.
   const [priorityText, setPriorityText] = useState(settings?.priorityHandles.join('\n') ?? '')
   const [searchText, setSearchText] = useState(settings?.searchQueries.join('\n') ?? '')
+  const [bskyPriorityText, setBskyPriorityText] = useState(settings?.bskyPriorityHandles.join('\n') ?? '')
+  const [bskySearchText, setBskySearchText] = useState(settings?.bskySearchQueries.join('\n') ?? '')
   useEffect(() => {
     setDraft(settings)
     setPriorityText(settings?.priorityHandles.join('\n') ?? '')
     setSearchText(settings?.searchQueries.join('\n') ?? '')
+    setBskyPriorityText(settings?.bskyPriorityHandles.join('\n') ?? '')
+    setBskySearchText(settings?.bskySearchQueries.join('\n') ?? '')
   }, [settings])
   useEffect(() => {
     void window.api.getScorerStats().then(setStats)
     void window.api.getBackupStatus().then(setBackup)
+    void window.api.getHistoryStatus().then(setHistory)
   }, [])
   if (!draft) return <div className="today"><p className="muted">Loading…</p></div>
 
@@ -90,6 +96,67 @@ export default function SettingsView({
           })}>{busy === 'verify' ? 'Checking…' : 'Save and verify keys'}</button>
         </div>
         <label>Your handle (if not verified) <input value={draft.xHandle} onChange={(e) => set('xHandle', e.target.value)} placeholder="yourname" /></label>
+      </section>
+
+      <section>
+        <h2>Bluesky</h2>
+        <p className="muted small">
+          Bluesky's API allows reading as well as writing, so no browsing account is needed: your own account reads its following feed, the priority accounts and the searches below,
+          and its posts join the same daily edition, ranked by the same standards. Make an app password on bsky.app under Settings → Privacy and security → App passwords; never use your main password here.
+        </p>
+        <label><input type="checkbox" checked={draft.bskyEnabled} onChange={(e) => set('bskyEnabled', e.target.checked)} /> Include Bluesky posts in the edition <span className="muted small">(off: nothing is read from or written to Bluesky)</span></label>
+        <label>Handle <input value={draft.bskyHandle} onChange={(e) => set('bskyHandle', e.target.value)} placeholder="you.bsky.social" /></label>
+        <label>App password <input type="password" value={secrets.bskyAppPassword ?? ''} placeholder={draft.hasBskyPassword ? '(saved)' : 'xxxx-xxxx-xxxx-xxxx'} onChange={(e) => setSecrets({ ...secrets, bskyAppPassword: e.target.value })} /></label>
+        <div className="row">
+          <span>{draft.bskyDid ? `Logged in as @${draft.bskyHandle}` : draft.hasBskyPassword && draft.bskyHandle ? 'Saved, not verified yet' : 'Not set up'}</span>
+          <button className="secondary" disabled={!!busy} onClick={() => void run('bsky', async () => {
+            await save()
+            const r = await window.api.verifyBsky()
+            if (r.ok) {
+              const s = await window.api.getSettings()
+              onSettings(s)
+              setDraft(s)
+            }
+            return r.ok ? `Logged in to Bluesky as @${r.handle}.` : r.error ?? 'Login failed.'
+          })}>{busy === 'bsky' ? 'Checking…' : 'Save and log in'}</button>
+        </div>
+        <label>Priority accounts on Bluesky <span className="muted small">(every original post goes in, one handle per line)</span>
+          <textarea rows={4} value={bskyPriorityText} onChange={(e) => { setBskyPriorityText(e.target.value); set('bskyPriorityHandles', e.target.value.split(/\n|,/).map((x) => x.trim().replace(/^@/, '')).filter(Boolean)) }} placeholder={'someone.bsky.social\nsomeone-else.com'} />
+        </label>
+        <label>Bluesky topic searches <span className="muted small">(one per line; quote phrases; Bluesky search has no minimum-likes filter, so the ranker does that work)</span>
+          <textarea rows={4} value={bskySearchText} onChange={(e) => { setBskySearchText(e.target.value); set('bskySearchQueries', e.target.value.split('\n').map((x) => x.trim()).filter(Boolean)) }} />
+        </label>
+        <label>Following-feed pages to read <input type="number" min={1} max={20} value={draft.bskyPages} onChange={(e) => set('bskyPages', Number(e.target.value))} /> <span className="muted small">(100 posts each)</span></label>
+      </section>
+
+      <section>
+        <h2>Your history (likes and replies)</h2>
+        <p className="muted small">
+          What you have liked and replied to teaches the filter what you enjoy. Import your X data archive once for the full history
+          (on x.com: Settings → Your account → Download an archive of your data; X emails a zip within a day), then the API keeps it current with a few requests a day.
+          Bluesky needs no archive: the first sync reads your whole like history through its API.
+        </p>
+        <div className="row">
+          <span>
+            {history ? `${history.likes} likes and ${history.replies} replies on file` : '…'}
+            {history?.importedAt ? ` · archive imported ${new Date(history.importedAt).toLocaleDateString()}` : ' · no archive yet'}
+            {history?.lastSyncDate ? ` · last API sync ${history.lastSyncDate}` : ''}
+          </span>
+          <span className="head-actions">
+            <button className="secondary" disabled={!!busy} onClick={() => void run('import', async () => {
+              const r = await window.api.importArchive()
+              setHistory(await window.api.getHistoryStatus())
+              if (!r.ok) return r.error === 'cancelled' ? '' : `Import failed: ${r.error}`
+              return `Imported ${r.likes} likes and ${r.replies} replies.`
+            })}>{busy === 'import' ? 'Importing…' : 'Import X archive…'}</button>
+            <button className="secondary" disabled={!!busy || !(draft.hasXApiKeys || (draft.bskyEnabled && draft.hasBskyPassword))} onClick={() => void run('history', async () => {
+              const r = await window.api.syncHistory()
+              setHistory(await window.api.getHistoryStatus())
+              return r.ok ? `Pulled ${r.likes} new likes and ${r.replies} new replies.` : `Sync failed: ${r.error}`
+            })}>{busy === 'history' ? 'Syncing…' : 'Sync now'}</button>
+          </span>
+        </div>
+        <label><input type="checkbox" checked={draft.historySync} onChange={(e) => set('historySync', e.target.checked)} /> Pull new likes and replies through the API every day</label>
       </section>
 
       <section>
@@ -152,8 +219,16 @@ export default function SettingsView({
       <section>
         <h2>Daily edition</h2>
         <label>Posts per day <input type="number" min={10} max={500} value={draft.dailyLimit} onChange={(e) => set('dailyLimit', Number(e.target.value))} /></label>
+        <label>Order posts
+          <select value={draft.ordering} onChange={(e) => set('ordering', e.target.value as Settings['ordering'])}>
+            <option value="priority">by priority (priority accounts first, then by score)</option>
+            <option value="chronological">chronologically (oldest first)</option>
+            <option value="newest">newest first</option>
+          </select>
+        </label>
         <label>Build automatically at <input type="number" min={0} max={23} value={draft.buildHour} onChange={(e) => set('buildHour', Number(e.target.value))} /> :00
           <input type="checkbox" checked={draft.autoBuild} onChange={(e) => set('autoBuild', e.target.checked)} /> enabled</label>
+        <label>Check for replies and mentions every <input type="number" min={0} max={1440} value={draft.notifyEveryMinutes} onChange={(e) => set('notifyEveryMinutes', Number(e.target.value))} /> minutes <span className="muted small">(0: only when you press Check now)</span></label>
         <label>Timeline pages to read <input type="number" min={2} max={40} value={draft.homePages} onChange={(e) => set('homePages', Number(e.target.value))} /> <span className="muted small">(roughly 25 posts each)</span></label>
         <label>Search pages per query <input type="number" min={1} max={5} value={draft.searchPages} onChange={(e) => set('searchPages', Number(e.target.value))} /></label>
       </section>
@@ -176,6 +251,7 @@ export default function SettingsView({
         <textarea rows={10} value={draft.interestProfile} onChange={(e) => set('interestProfile', e.target.value)} />
         <label><input type="checkbox" checked={draft.claudeEnabled} onChange={(e) => set('claudeEnabled', e.target.checked)} /> Use Claude for ranking</label>
         <label>Model <input value={draft.claudeModel} onChange={(e) => set('claudeModel', e.target.value)} /></label>
+        <label><input type="checkbox" checked={draft.autoTranslate} onChange={(e) => set('autoTranslate', e.target.checked)} /> Translate posts not in English while building the edition <span className="muted small">(otherwise each post has a Translate button)</span></label>
         <label>Anthropic API key <input type="password" placeholder={draft.hasAnthropicKey ? '•••••••• (saved)' : 'sk-ant-…'} value={secrets.anthropicApiKey ?? ''} onChange={(e) => setSecrets({ ...secrets, anthropicApiKey: e.target.value })} /></label>
       </section>
 

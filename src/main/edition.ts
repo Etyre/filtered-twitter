@@ -1,4 +1,4 @@
-// Builds the daily edition: gather candidates (via the browsing account), score, select, persist.
+// Builds the daily edition: gather candidates (X via the browsing account, Bluesky via its API), score, select, persist.
 import type { Edition, Progress, ScoredTweet, Source, Tweet } from '@shared/types'
 import { prefetchThreads } from './thread'
 import { snapshot } from './backup'
@@ -7,7 +7,9 @@ import { scoreHeuristic, trainHeuristic } from './ranking/heuristic'
 import { scoreWithClaude } from './ranking/claude'
 import { auc, blend, fitWeights } from './ranking/blend'
 import { loadSettings, readSecret, saveSettings } from './settings'
+import { translateTweets } from './translate'
 import type { XBrowser } from './x/browser'
+import * as bsky from './bsky/client'
 
 export function localDate(d = new Date()): string {
   const y = d.getFullYear()
@@ -48,23 +50,31 @@ export async function buildEdition(browser: XBrowser, log: (m: string) => void, 
   building = true
   try {
     const s = loadSettings()
-    if (!(await browser.isLoggedIn())) throw new Error('The browsing account is not logged in. Open Settings and log in.')
+    const xOn = await browser.isLoggedIn()
+    const bskyOn = bsky.configured()
+    if (!xOn && !bskyOn) throw new Error('Nothing to read from: log the browsing account in, or set up Bluesky, in Settings.')
     const cutoff = new Date(Date.now() - 26 * 3600 * 1000)
     const already = shownTweetIds()
-    const priority = new Set(s.priorityHandles.map((h) => h.toLowerCase()))
+    // Bluesky handles contain a dot and X handles cannot, so one set holds both without clashing.
+    const priority = new Set([...s.priorityHandles, ...s.bskyPriorityHandles].map((h) => h.toLowerCase()))
     const followingSet = new Set(s.followingHandles)
-    const skipAuthors = new Set([s.xHandle.toLowerCase(), s.browsingHandle.toLowerCase()].filter(Boolean))
+    const skipAuthors = new Set([s.xHandle.toLowerCase(), s.browsingHandle.toLowerCase(), s.bskyHandle.toLowerCase()].filter(Boolean))
     const candidates = new Map<string, { tweet: Tweet; source: Source; isFollowing: boolean }>()
+    const notes: string[] = []
     const rank: Record<Source, number> = { priority: 4, following: 3, search: 2, foryou: 1, notification: 0 }
-    const add = (t: Tweet, source: Source): void => {
+    const add = (t: Tweet, source: Source, following = false): void => {
       if (already.has(t.id)) return
       if (new Date(t.createdAt) < cutoff) return
       if (skipAuthors.has(t.author.handle.toLowerCase())) return
-      const isFollowing = followingSet.has(t.author.handle.toLowerCase()) || priority.has(t.author.handle.toLowerCase())
+      const isFollowing = following || followingSet.has(t.author.handle.toLowerCase()) || priority.has(t.author.handle.toLowerCase())
       const cur = candidates.get(t.id)
       if (!cur || rank[source] > rank[cur.source]) candidates.set(t.id, { tweet: t, source, isFollowing })
     }
 
+    if (xOn) await gatherX()
+    if (bskyOn) await gatherBsky()
+
+    async function gatherX(): Promise<void> {
     // 1. Priority accounts, each profile read in full.
     let i = 0
     for (const h of s.priorityHandles) {
@@ -95,6 +105,7 @@ export async function buildEdition(browser: XBrowser, log: (m: string) => void, 
     const since = localDate(new Date(Date.now() - 24 * 3600 * 1000))
     const uncovered = s.followingHandles.filter((h) => !browsingFollows.has(h) && !priority.has(h))
     const sweeps = fromQueries(uncovered)
+    if (uncovered.length) notes.push(`${uncovered.length} accounts swept by search; the browsing account follows ${browsingFollows.size} so far.`)
     i = 0
     for (const q of sweeps) {
       i++
@@ -119,6 +130,54 @@ export async function buildEdition(browser: XBrowser, log: (m: string) => void, 
         log(`search failed: ${String(e)}`)
       }
     }
+    }
+
+    /** Bluesky: priority accounts, the following feed, and topic searches, all through the API. */
+    async function gatherBsky(): Promise<void> {
+      const found: Tweet[] = []
+      const take = (ts: Tweet[], source: Source, following: boolean): void => {
+        for (const t of ts) {
+          add(t, source, following)
+          found.push(t)
+        }
+      }
+      let i = 0
+      for (const h of s.bskyPriorityHandles) {
+        i++
+        report('Bluesky priority accounts', `@${h} (${i}/${s.bskyPriorityHandles.length})`)
+        try {
+          take(await bsky.authorFeed(h, cutoff), 'priority', true)
+        } catch (e) {
+          log(`bsky priority @${h} failed: ${String(e)}`)
+        }
+      }
+      report('Bluesky following feed', `up to ${s.bskyPages} pages`)
+      try {
+        take(await bsky.timeline(s.bskyPages, cutoff), 'following', true)
+      } catch (e) {
+        log('bsky timeline failed: ' + String(e))
+      }
+      i = 0
+      for (const q of s.bskySearchQueries) {
+        i++
+        report('Searching Bluesky', `${i}/${s.bskySearchQueries.length}: ${q.slice(0, 60)}`)
+        try {
+          take(await bsky.search(q, cutoff), 'search', false)
+        } catch (e) {
+          log(`bsky search failed: ${String(e)}`)
+        }
+      }
+      // Feed items carry no follower counts; fetch them so engagement is judged against audience size, as on X.
+      const dids = [...new Set(found.filter((t) => candidates.has(t.id)).map((t) => t.author.id))]
+      if (dids.length) {
+        report('Bluesky profiles', `${dids.length} accounts`)
+        const counts = await bsky.followerCounts(dids)
+        for (const c of candidates.values()) {
+          const n = c.tweet.network === 'bsky' ? counts.get(c.tweet.author.id) : undefined
+          if (n !== undefined) c.tweet.author.followers = n
+        }
+      }
+    }
 
     const all = [...candidates.values()]
     upsertTweets(all.map((c) => c.tweet))
@@ -135,7 +194,6 @@ export async function buildEdition(browser: XBrowser, log: (m: string) => void, 
 
     // 6. Claude, on the heuristic shortlist to bound cost
     const key = readSecret('anthropicApiKey')
-    const notes: string[] = []
     if (s.claudeEnabled && key) {
       const shortlist = [...scored]
         .filter((x) => !x.priorityAccount)
@@ -189,12 +247,24 @@ export async function buildEdition(browser: XBrowser, log: (m: string) => void, 
       return b.finalScore - a.finalScore
     })
 
-    if (uncovered.length) notes.push(`${uncovered.length} accounts swept by search; the browsing account follows ${browsingFollows.size} so far.`)
+    const bskyCount = all.filter((c) => c.tweet.network === 'bsky').length
+    if (bskyOn) notes.push(`${bskyCount} candidates came from Bluesky, ${chosen.filter((x) => x.tweet.network === 'bsky').length} chosen.`)
     const hAuc = auc(history, (h) => h.heuristic)
     const cAuc = auc(history, (h) => h.claude)
     if (hAuc !== null || cAuc !== null) notes.push(`Scorer AUC so far: heuristic ${fmt(hAuc)}, Claude ${fmt(cAuc)}; weights h=${weights.heuristic.toFixed(2)} c=${weights.claude.toFixed(2)}.`)
     report('Saving', `${chosen.length} posts`)
-    const ed = createEdition(date, chosen, scored, notes.join(' '))
+    let ed = createEdition(date, chosen, scored, notes.join(' '))
+    if (s.autoTranslate && key) {
+      try {
+        const n = await translateTweets(chosen.map((x) => x.tweet), log, (d, t) => report('Translating', `${d}/${t}`))
+        if (n) {
+          log(`translated ${n} posts`)
+          ed = getEditionByDate(date) ?? ed // re-read, so the items carry their translations
+        }
+      } catch (e) {
+        log('translation failed: ' + String(e))
+      }
+    }
     report('Done', `${chosen.length} posts from ${all.length} candidates`, true)
     void prefetchThreads(browser, chosen.filter((x) => x.tweet.replies > 0 || x.tweet.inReplyToId).map((x) => x.tweet.id), log)
     snapshot('build', log)
