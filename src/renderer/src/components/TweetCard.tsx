@@ -351,7 +351,8 @@ export default function TweetCard({
   onChange: () => void
 }): React.JSX.Element {
   const vote = useSharedVote(item.tweet.id, item.vote)
-  const [quoting, setQuoting] = useState(false)
+  const [compose, setCompose] = useState<'reply' | 'quote' | null>(null) // the composer open under this card, if any
+  const toggle = (kind: 'reply' | 'quote'): void => setCompose((c) => (c === kind ? null : kind))
   // A voted post folds to one line so the edition reads as a to-do list; it can be opened again, and folds afresh on the next vote.
   const [expanded, setExpanded] = useState(false)
   useEffect(() => setExpanded(false), [vote])
@@ -389,13 +390,19 @@ export default function TweetCard({
         <button className="link" onClick={() => onOpenThread(item.tweet.id)}>
           {item.tweet.replies ? `Discussion (${fmtCount(item.tweet.replies)})` : 'Discussion'}{item.opened ? ' · seen' : ''}
         </button>
-        <button className="link" onClick={() => onOpenThread(item.tweet.id)}>{item.replied ? 'Replied ✓' : 'Reply'}</button>
-        <PostActions tweet={item.tweet} onQuote={() => setQuoting((q) => !q)} />
+        <button className="link" onClick={() => toggle('reply')}>{item.replied ? 'Replied ✓' : 'Reply'}</button>
+        <PostActions tweet={item.tweet} onQuote={() => toggle('quote')} />
       </div>
-      {quoting ? (
-        <div className="reply-box">
-          <div className="muted small">Quoting @{item.tweet.author.handle}</div>
-          <Composer quoteId={item.tweet.id} onDone={() => setQuoting(false)} onCancel={() => setQuoting(false)} />
+      {compose ? (
+        <div className="reply-box" onClick={(e) => e.stopPropagation()}>
+          <div className="muted small">{compose === 'reply' ? 'Replying to' : 'Quoting'} @{item.tweet.author.handle}</div>
+          <Composer
+            key={compose}
+            replyToId={compose === 'reply' ? item.tweet.id : undefined}
+            quoteId={compose === 'quote' ? item.tweet.id : undefined}
+            onDone={() => { setCompose(null); onChange() }}
+            onCancel={() => setCompose(null)}
+          />
         </div>
       ) : null}
     </article>

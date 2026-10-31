@@ -21,6 +21,7 @@ export default function SettingsView({
   const [saved, setSaved] = useState<string | null>(null)
   const [ip, setIp] = useState<IpCheck | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
+  const [web, setWeb] = useState<SessionStatus | null>(null) // your own account's web session
   const [msg, setMsg] = useState<string | null>(null)
   // Raw text for the list fields, so typing a newline is not parsed away mid-keystroke.
   const [priorityText, setPriorityText] = useState(settings?.priorityHandles.join('\n') ?? '')
@@ -38,6 +39,7 @@ export default function SettingsView({
     void window.api.getScorerStats().then(setStats)
     void window.api.getBackupStatus().then(setBackup)
     void window.api.getHistoryStatus().then(setHistory)
+    void window.api.getWebSessionStatus().then(setWeb)
   }, [])
   if (!draft) return <div className="today"><p className="muted">Loading…</p></div>
 
@@ -96,6 +98,23 @@ export default function SettingsView({
           })}>{busy === 'verify' ? 'Checking…' : 'Save and verify keys'}</button>
         </div>
         <label>Your handle (if not verified) <input value={draft.xHandle} onChange={(e) => set('xHandle', e.target.value)} placeholder="yourname" /></label>
+      </section>
+
+      <section>
+        <h2>Your account's web session (replies and quotes)</h2>
+        <p className="muted small">
+          Since February 2026, X's self-serve API lets an app reply to or quote only posts whose author mentioned you. Basic and Pro do not lift this; only Enterprise does.
+          Log in here with your own account and the app posts those replies and quotes the way the website does, in a hidden window, still using the API for everything else.
+          Leave it logged out and the composer offers to open X with your draft instead. This session is never proxied and never used for reading.
+        </p>
+        <div className="row">
+          <span>{web?.loggedIn ? `Logged in${web.handle ? ' as @' + web.handle : ''}` : 'Not logged in'}</span>
+          {web?.loggedIn ? (
+            <button className="secondary" onClick={async () => setWeb(await window.api.webLogout())}>Log out</button>
+          ) : (
+            <button className="primary" onClick={async () => setWeb(await window.api.openWebLogin())}>Log in</button>
+          )}
+        </div>
       </section>
 
       <section>
@@ -228,7 +247,7 @@ export default function SettingsView({
         </label>
         <label>Build automatically at <input type="number" min={0} max={23} value={draft.buildHour} onChange={(e) => set('buildHour', Number(e.target.value))} /> :00
           <input type="checkbox" checked={draft.autoBuild} onChange={(e) => set('autoBuild', e.target.checked)} /> enabled</label>
-        <label>Check for replies and mentions every <input type="number" min={0} max={1440} value={draft.notifyEveryMinutes} onChange={(e) => set('notifyEveryMinutes', Number(e.target.value))} /> minutes <span className="muted small">(0: only when you press Check now)</span></label>
+        <label>Check for replies, mentions, and quotes every <input type="number" min={0} max={1440} value={draft.notifyEveryMinutes} onChange={(e) => set('notifyEveryMinutes', Number(e.target.value))} /> minutes <span className="muted small">(0: only when you press Check now)</span></label>
         <label>Timeline pages to read <input type="number" min={2} max={40} value={draft.homePages} onChange={(e) => set('homePages', Number(e.target.value))} /> <span className="muted small">(roughly 25 posts each)</span></label>
         <label>Search pages per query <input type="number" min={1} max={5} value={draft.searchPages} onChange={(e) => set('searchPages', Number(e.target.value))} /></label>
       </section>

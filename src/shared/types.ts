@@ -205,6 +205,8 @@ export interface Settings {
   /** Your real account: writes and DMs only, through the official API. */
   xUserId: string
   xHandle: string
+  /** Handle seen in your own account's optional web session, used only for replies and quotes the API refuses. */
+  webHandle: string
   /** The disposable browsing account that does all the reading. */
   browsingHandle: string
   proxyUrl: string
@@ -223,7 +225,7 @@ export interface Settings {
   ordering: Ordering
   /** Translate posts not in English while building the edition. Needs the Anthropic key. */
   autoTranslate: boolean
-  /** How often to check for replies and mentions, in minutes; 0 means only by hand. */
+  /** How often to check for replies, mentions, and quotes, in minutes; 0 means only by hand. */
   notifyEveryMinutes: number
   /** Pull recent likes and replies from your real account daily, through the API, as training signal. */
   historySync: boolean
@@ -310,10 +312,20 @@ export interface SessionStatus {
 
 export type PostNetwork = Network | 'both'
 
+/** An account the composer can offer when you type @ and a few letters. */
+export interface HandleSuggestion {
+  handle: string
+  name: string
+  avatar: string
+  network: Network
+}
+
 export interface PostResult {
   ok: boolean
   ids: string[]
   error?: string
+  /** web: at least one part went through your own web session because the API refused it. */
+  via?: 'api' | 'web'
 }
 
 export interface IpCheck {
@@ -331,6 +343,10 @@ export interface Api {
   openSignup(): Promise<SessionStatus>
   logout(): Promise<SessionStatus>
   checkIp(): Promise<IpCheck>
+  /** Your own account's web session: opt-in, for the replies and quotes X's API refuses. */
+  getWebSessionStatus(): Promise<SessionStatus>
+  openWebLogin(): Promise<SessionStatus>
+  webLogout(): Promise<SessionStatus>
   refreshFollowing(): Promise<Settings>
   /** Picks the X data archive (zip or folder) and files its likes and replies as history. */
   importArchive(): Promise<{ ok: boolean; likes?: number; replies?: number; error?: string }>
@@ -367,6 +383,8 @@ export interface Api {
 
   /** quoteId: the first post quotes that post. network: where a fresh post goes; a reply or quote follows the post it answers. */
   postThread(texts: string[], replyToId?: string, quoteId?: string, network?: PostNetwork): Promise<PostResult>
+  /** Accounts whose handle or name starts with what was typed after an @, from everything the app has read, best first. */
+  suggestHandles(prefix: string, network: PostNetwork): Promise<HandleSuggestion[]>
   /** Asks Claude about a post and its discussion; the reply streams through onChatDelta under requestId, and arrives whole here. */
   askClaude(tweetId: string, messages: ChatMessage[], requestId: string): Promise<{ ok: boolean; text?: string; error?: string }>
   stopClaude(requestId: string): Promise<void>

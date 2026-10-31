@@ -14,18 +14,18 @@ import * as backup from './backup'
 import * as actions from './x/actions'
 import { translateOne } from './translate'
 import { chatAboutPost, stopChat } from './chat'
-import { applyProxy, openLoginWindow, XBrowser } from './x/browser'
+import { applyProxy, openLoginWindow, REAL_PARTITION, XBrowser } from './x/browser'
 import * as official from './x/official'
 import * as bsky from './bsky/client'
 import { isBskyId } from '@shared/net'
 
-export function registerIpc(browser: XBrowser, mainWin: () => BrowserWindow | null, log: (m: string) => void): void {
+export function registerIpc(browser: XBrowser, web: XBrowser, mainWin: () => BrowserWindow | null, log: (m: string) => void): void {
   onProgress((p) => mainWin()?.webContents.send('progress', p))
 
   ipcMain.handle('settings:get', () => loadSettings())
   // Fields the app maintains itself. The Settings form sends its whole draft, which may be minutes old, so these never come from it.
   const MACHINE_FIELDS: (keyof Settings)[] = [
-    'browsingFollows', 'browsingHandle', 'followingHandles', 'followingFetchedAt', 'lastFollowSyncDate', 'lastBackupAt', 'blendWeights', 'xUserId', 'hasAnthropicKey', 'hasXApiKeys',
+    'browsingFollows', 'browsingHandle', 'webHandle', 'followingHandles', 'followingFetchedAt', 'lastFollowSyncDate', 'lastBackupAt', 'blendWeights', 'xUserId', 'hasAnthropicKey', 'hasXApiKeys',
     'lastHistorySyncDate', 'historyImportedAt', 'bskyDid', 'hasBskyPassword'
   ]
   ipcMain.handle('settings:save', async (_e, patch: Partial<Settings>) => {
@@ -53,16 +53,16 @@ export function registerIpc(browser: XBrowser, mainWin: () => BrowserWindow | nu
     return loadSettings()
   })
 
-  // ----- browsing account session -----
-  const sessionStatus = async (probe: boolean): Promise<SessionStatus> => {
-    const loggedIn = await browser.isLoggedIn()
-    let handle = loadSettings().browsingHandle || null
+  // ----- browsing account session, and your own account's web session -----
+  const statusOf = async (b: XBrowser, field: 'browsingHandle' | 'webHandle', probe: boolean): Promise<SessionStatus> => {
+    const loggedIn = await b.isLoggedIn()
+    let handle = loadSettings()[field] || null
     if (loggedIn && (probe || !handle)) {
       try {
-        const h = await browser.currentHandle()
+        const h = await b.currentHandle()
         if (h) {
           handle = h
-          saveSettings({ browsingHandle: h })
+          saveSettings({ [field]: h })
         }
       } catch (e) {
         log('handle probe failed: ' + String(e))
@@ -71,6 +71,17 @@ export function registerIpc(browser: XBrowser, mainWin: () => BrowserWindow | nu
     if (!loggedIn) handle = null
     return { loggedIn, handle, checkedAt: new Date().toISOString() }
   }
+  const sessionStatus = (probe: boolean): Promise<SessionStatus> => statusOf(browser, 'browsingHandle', probe)
+  ipcMain.handle('web:status', () => statusOf(web, 'webHandle', false))
+  ipcMain.handle('web:login', async () => {
+    await openLoginWindow(mainWin() ?? undefined, 'login', REAL_PARTITION)
+    return statusOf(web, 'webHandle', true)
+  })
+  ipcMain.handle('web:logout', async () => {
+    await web.logout()
+    saveSettings({ webHandle: '' })
+    return statusOf(web, 'webHandle', false)
+  })
   ipcMain.handle('session:status', () => sessionStatus(false))
   ipcMain.handle('session:login', async () => {
     await openLoginWindow(mainWin() ?? undefined)
@@ -257,6 +268,11 @@ export function registerIpc(browser: XBrowser, mainWin: () => BrowserWindow | nu
         .catch((e) => log(`thread refresh after reply ${replyToId} failed: ${String(e)}`))
     }
     return r
+  })
+
+  ipcMain.handle('handles:suggest', (_e, prefix: string, network: PostNetwork) => {
+    const s = loadSettings()
+    return db.suggestHandles(prefix, network, { x: [...s.followingHandles, ...s.priorityHandles], bsky: s.bskyPriorityHandles })
   })
 
   ipcMain.handle('scorer:stats', () => {

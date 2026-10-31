@@ -32,6 +32,7 @@ export const DEFAULTS: Settings = {
   hasXApiKeys: false,
   xUserId: '',
   xHandle: '',
+  webHandle: '',
   browsingHandle: '',
   proxyUrl: '',
   followSync: true,

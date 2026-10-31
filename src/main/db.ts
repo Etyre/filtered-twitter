@@ -1,7 +1,7 @@
 import Database, { type Statement } from 'better-sqlite3'
 import { app } from 'electron'
 import { join } from 'path'
-import type { Edition, EditionItem, EditionSummary, Notification, ScoredTweet, Thread, Tweet, Vote } from '@shared/types'
+import type { Edition, EditionItem, EditionSummary, HandleSuggestion, Notification, PostNetwork, ScoredTweet, Thread, Tweet, Vote } from '@shared/types'
 
 let db: Database.Database
 
@@ -395,6 +395,54 @@ export function historyCounts(): { likes: number; replies: number } {
 export function shownTweetIds(): Set<string> {
   const rows = db.prepare('SELECT tweet_id FROM edition_items').all() as { tweet_id: string }[]
   return new Set(rows.map((r) => r.tweet_id))
+}
+
+// ---------- handle suggestions ----------
+type AuthorRow = HandleSuggestion & { n: number }
+let authorIndex: { rows: AuthorRow[]; at: number } | null = null
+
+/** Every author the app has read, with how many of their posts it holds. Built once and kept for a while: the table is big and this runs on every keystroke. */
+function authors(): AuthorRow[] {
+  if (authorIndex && Date.now() - authorIndex.at < 5 * 60_000) return authorIndex.rows
+  const rows = db
+    .prepare(
+      `SELECT author_handle AS handle, json_extract(json,'$.author.name') AS name, json_extract(json,'$.author.avatar') AS avatar,
+              CASE WHEN id LIKE 'at://%' THEN 'bsky' ELSE 'x' END AS network, COUNT(*) AS n
+       FROM tweets WHERE author_handle != '' GROUP BY lower(author_handle), network`
+    )
+    .all() as AuthorRow[]
+  authorIndex = { rows: rows.map((r) => ({ ...r, name: r.name ?? '', avatar: r.avatar ?? '' })), at: Date.now() }
+  return authorIndex.rows
+}
+
+/** Accounts matching what was typed after an @: handle prefix first, then a name word, then anywhere in the handle; more posts read, or followed, ranks higher. */
+export function suggestHandles(prefix: string, network: PostNetwork, followed: { x: string[]; bsky: string[] }, limit = 8): HandleSuggestion[] {
+  const p = prefix.replace(/^@/, '').toLowerCase()
+  if (!p) return []
+  const want = (n: 'x' | 'bsky'): boolean => network === 'both' || network === n
+  const rows = new Map<string, AuthorRow>()
+  for (const r of authors()) if (want(r.network)) rows.set(r.network + ':' + r.handle.toLowerCase(), r)
+  for (const n of ['x', 'bsky'] as const) {
+    if (!want(n)) continue
+    for (const h of followed[n]) {
+      const k = n + ':' + h.toLowerCase()
+      if (!rows.has(k)) rows.set(k, { handle: h, name: '', avatar: '', network: n, n: 0 })
+    }
+  }
+  const followedSet = new Set([...followed.x.map((h) => 'x:' + h.toLowerCase()), ...followed.bsky.map((h) => 'bsky:' + h.toLowerCase())])
+  const scored: { r: AuthorRow; tier: number; score: number }[] = []
+  for (const [k, r] of rows) {
+    const h = r.handle.toLowerCase()
+    const name = r.name.toLowerCase()
+    let tier: number
+    if (h.startsWith(p)) tier = 0
+    else if (name.split(/\s+/).some((w) => w.startsWith(p))) tier = 1
+    else if (h.includes(p)) tier = 2
+    else continue
+    scored.push({ r, tier, score: Math.log1p(r.n) + (followedSet.has(k) ? 3 : 0) })
+  }
+  scored.sort((a, b) => a.tier - b.tier || b.score - a.score || a.r.handle.localeCompare(b.r.handle))
+  return scored.slice(0, limit).map(({ r }) => ({ handle: r.handle, name: r.name, avatar: r.avatar, network: r.network }))
 }
 
 // ---------- notifications ----------

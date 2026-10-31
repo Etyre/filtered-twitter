@@ -46,7 +46,7 @@ export function startScheduler(browser: XBrowser, mainWin: () => BrowserWindow |
           mainWin()?.webContents.send('notifications:updated')
           if (SysNotification.isSupported()) {
             const who = [...new Set(fresh.map((n) => '@' + n.fromHandles[0]))].slice(0, 3).join(', ')
-            new SysNotification({ title: fresh.length === 1 ? 'New reply or mention' : `${fresh.length} new replies and mentions`, body: `From ${who}` }).show()
+            new SysNotification({ title: fresh.length === 1 ? `New ${fresh[0].kind === 'other' ? 'notification' : fresh[0].kind}` : `${fresh.length} new replies, mentions, and quotes`, body: `From ${who}` }).show()
           }
         }
       } catch (e) {

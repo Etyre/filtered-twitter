@@ -5,7 +5,7 @@ A calm desktop client for X. One finite edition of about 100 posts a day, chosen
 ## Two accounts, kept apart
 
 - **Browsing account.** A disposable X account logged into a hidden browser inside the app. It does all the reading: profiles of priority accounts, batched searches over everyone you follow, AI topic searches, a post's page for its replies, and a search for mentions of you. Reading X this way is against X's terms of service; if X ever objects, this is the account at risk. Its traffic can go through a proxy so it never shares your home address. Optionally it follows the same people you do, a few per day, so its own timeline becomes the main source and it looks like an ordinary account.
-- **Your real account.** Touched only through the official X API v2 with your developer keys: likes, reposts, replies, posts, and direct messages. The free developer tier covers everything except DMs, which last we knew need the Basic tier.
+- **Your real account.** Touched through the official X API v2 with your developer keys: likes, reposts, replies, posts, and direct messages. The free developer tier covers everything except DMs, which last we knew need the Basic tier. One exception: since February 2026 the self-serve API tiers (Free, Basic, Pro, Pay-Per-Use) reply to or quote only posts whose author mentioned you. For the rest, you can optionally log your own account into a second hidden browser (Settings → Your account's web session); those replies and quotes then go through X's own composer, as if you were on the website. Nothing else uses that session, and it never goes through the proxy.
 
 ## Ranking
 
@@ -46,5 +46,5 @@ Claude scores about 300 candidates a day in batches of 30 with a cached system p
 
 - X changes its internal JSON shapes. The parser deep-walks responses for tweet objects, which is robust to most changes, but if a build returns far fewer candidates than usual, check `app.log`.
 - A new browsing account may be rate-limited on search until it has aged. Lower the pages-per-query settings if builds stall.
-- Quote-tweet notifications are only found when the quote also mentions you. Like and follow notifications are not shown at all.
+- Quote-tweet notifications come from two searches by the browsing account (X's `quoted_user_id:` operator and a `url:` search for your post permalinks), so if X stops indexing either, quotes that do not mention you will be missed. Like and follow notifications are not shown at all.
 - `FT_SMOKE=1 npx electron .` runs a capture smoke test and logs results to `app.log`.

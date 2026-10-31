@@ -7,7 +7,8 @@ import { localDate } from './edition'
 import { prefetchThreads } from './thread'
 import { snapshotIfStale } from './backup'
 import { registerIpc } from './ipc'
-import { applyProxy, XBrowser } from './x/browser'
+import { applyProxy, REAL_PARTITION, XBrowser } from './x/browser'
+import { setWebBrowser } from './x/actions'
 import { startScheduler } from './scheduler'
 import { runSmoke } from './smoke'
 import { loadSettings } from './settings'
@@ -17,6 +18,7 @@ app.setPath('userData', join(app.getPath('appData'), 'filtered-twitter'))
 
 let mainWindow: BrowserWindow | null = null
 let browser: XBrowser
+let web: XBrowser // your own account's web session, for the replies and quotes the API refuses
 
 function log(msg: string): void {
   const line = `${new Date().toISOString()} ${msg}\n`
@@ -78,7 +80,9 @@ app.whenReady().then(async () => {
   openDb()
   await applyProxy(loadSettings().proxyUrl, log)
   browser = new XBrowser(log)
-  registerIpc(browser, () => mainWindow, log)
+  web = new XBrowser(log, REAL_PARTITION)
+  setWebBrowser(web)
+  registerIpc(browser, web, () => mainWindow, log)
   createWindow()
   startScheduler(browser, () => mainWindow, log)
   snapshotIfStale(log)
@@ -98,4 +102,7 @@ app.whenReady().then(async () => {
 app.on('window-all-closed', () => {
   app.quit()
 })
-app.on('before-quit', () => browser?.close())
+app.on('before-quit', () => {
+  browser?.close()
+  web?.close()
+})

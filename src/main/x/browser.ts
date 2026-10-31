@@ -1,7 +1,8 @@
 // Drives a hidden BrowserWindow logged into x.com AS THE BROWSING ACCOUNT and
 // captures the JSON the site's own frontend receives. This sidesteps the
 // request-signing headers X requires for raw API calls. Your real account is
-// never logged in here.
+// never logged in here: a second instance on REAL_PARTITION may hold your own
+// web session, used only to post the replies and quotes the API refuses.
 import { app, BrowserWindow, session } from 'electron'
 import type { Author, Tweet } from '@shared/types'
 import { collectTweets, parseUser } from './parse'
@@ -15,14 +16,16 @@ export interface Captured {
 
 const X_ORIGIN = 'https://x.com'
 export const PARTITION = 'persist:browsing'
+/** Your own account's web session, opt-in, for replies and quotes X's self-serve API refuses. Never proxied, never used for reading. */
+export const REAL_PARTITION = 'persist:real'
 
 function isRecordWithErrors(v: unknown): v is { errors: { message: string }[] } {
   return !!v && typeof v === 'object' && Array.isArray((v as { errors?: unknown }).errors)
 }
 
 /** True when the browsing partition holds X's auth_token cookie. Filters by name only: Electron's domain filter is unreliable for dotted domains. */
-export async function hasAuthCookie(): Promise<boolean> {
-  const cookies = await session.fromPartition(PARTITION).cookies.get({ name: 'auth_token' })
+export async function hasAuthCookie(partition = PARTITION): Promise<boolean> {
+  const cookies = await session.fromPartition(partition).cookies.get({ name: 'auth_token' })
   return cookies.some((c) => /(^|\.)x\.com$/.test(c.domain ?? '') || /(^|\.)twitter\.com$/.test(c.domain ?? ''))
 }
 
@@ -62,9 +65,11 @@ export class XBrowser {
   private captures: Captured[] = []
   private queue: Promise<unknown> = Promise.resolve()
   private log: (msg: string) => void
+  readonly partition: string
 
-  constructor(log: (msg: string) => void = () => {}) {
+  constructor(log: (msg: string) => void = () => {}, partition = PARTITION) {
     this.log = log
+    this.partition = partition
   }
 
   /** Serialize all browser operations. */
@@ -80,7 +85,7 @@ export class XBrowser {
       show: false,
       width: 1200,
       height: 1400,
-      webPreferences: { partition: PARTITION, backgroundThrottling: false, contextIsolation: true, sandbox: true }
+      webPreferences: { partition: this.partition, backgroundThrottling: false, contextIsolation: true, sandbox: true }
     })
     win.webContents.setAudioMuted(true)
     // Give the window a live renderer before attaching the debugger: on a fresh, never-navigated
@@ -190,12 +195,12 @@ export class XBrowser {
 
   // ---------- session ----------
   async isLoggedIn(): Promise<boolean> {
-    return hasAuthCookie()
+    return hasAuthCookie(this.partition)
   }
 
   async logout(): Promise<void> {
     this.close()
-    await session.fromPartition(PARTITION).clearStorageData()
+    await session.fromPartition(this.partition).clearStorageData()
   }
 
   /** Handle of the logged-in browsing account, read from the home page nav. */
@@ -372,6 +377,81 @@ export class XBrowser {
     })
   }
 
+  /**
+   * Posts through the website's own composer, as a person at x.com would, for the replies and quotes
+   * the self-serve API refuses. A reply opens X's post intent with the draft filled in; a quote opens the
+   * post's own Repost menu and picks Quote, the only way the composer attaches a quote card (a pasted link
+   * stays a link). Then it presses Post and reads the new post's id from the response. With both a reply
+   * target and a quote, the quote wins. Returns the new post's id.
+   */
+  async postViaWeb(text: string, replyToId?: string, quoteId?: string): Promise<string> {
+    return this.run(async () => {
+      if (!(await this.isLoggedIn())) throw new Error('your own account is not logged in (Settings)')
+      const box = `document.querySelector('[data-testid="tweetTextarea_0"]')`
+      if (quoteId) {
+        await this.navigate(`/i/status/${quoteId}`)
+        let opened = false
+        for (let i = 0; i < 20 && !opened; i++) {
+          const r = await this.exec<string>(
+            `(() => {
+              const focal = document.querySelector('article[data-testid="tweet"][tabindex="-1"]') || document.querySelector('article[data-testid="tweet"]');
+              const rt = focal && focal.querySelector('[data-testid="retweet"], [data-testid="unretweet"]');
+              if (!rt) return 'none';
+              rt.click(); return 'clicked';
+            })()`
+          )
+          if (r !== 'clicked') {
+            await this.sleep(500)
+            continue
+          }
+          await this.sleep(1000)
+          const q = await this.exec<boolean>(
+            `(() => { const q = [...document.querySelectorAll('[role="menuitem"]')].find((i) => /^quote/i.test((i.innerText || '').trim())); if (!q) return false; q.click(); return true })()`
+          )
+          if (!q) throw new Error('the Quote item was not in the Repost menu')
+          opened = true
+        }
+        if (!opened) throw new Error('the post page showed no Repost button (deleted, or protected?)')
+      } else {
+        const u = new URL(X_ORIGIN + '/intent/post')
+        u.searchParams.set('text', text)
+        if (replyToId) u.searchParams.set('in_reply_to', replyToId)
+        await this.navigate(u.toString())
+      }
+      let ready = false
+      for (let i = 0; i < 30 && !ready; i++) {
+        ready = !!(await this.exec<boolean>(`!!${box}`))
+        if (!ready) await this.sleep(500)
+      }
+      if (!ready) throw new Error('the composer did not open' + (/\/i\/flow\/login/.test((await this.ensure()).webContents.getURL()) ? ' (X asked to log in again)' : ''))
+      const typed = ((await this.exec<string>(`(${box}.textContent || '')`)) ?? '').trim()
+      if (typed !== text.trim()) {
+        // A quote starts empty, and now and then the intent does not fill the draft in: type it.
+        await this.exec(`${box}.focus(); true`)
+        await (await this.ensure()).webContents.insertText(text)
+      }
+      await this.jitter(1500, 2500) // a person would pause before pressing Post
+      const before = this.captures.filter((c) => c.op === 'CreateTweet').length
+      const clicked = await this.exec<string>(
+        `(() => {
+          const b = document.querySelector('[data-testid="tweetButton"]') || document.querySelector('[data-testid="tweetButtonInline"]');
+          if (!b) return 'none';
+          if (b.getAttribute('aria-disabled') === 'true' || b.disabled) return 'disabled';
+          b.click(); return 'clicked';
+        })()`
+      )
+      if (clicked !== 'clicked') throw new Error(clicked === 'disabled' ? 'X would not enable the Post button (too long, or the draft did not load?)' : 'the Post button was not found')
+      const n = await this.waitForNewCaptures(/^CreateTweet$/, before, 25000)
+      if (n === before) throw new Error('no answer from X after pressing Post')
+      const cap = this.captures.filter((c) => c.op === 'CreateTweet').pop()!
+      if (isRecordWithErrors(cap.json) && cap.json.errors.length) throw new Error(cap.json.errors.map((e) => e.message).join('; '))
+      const id = collectTweets(cap.json)[0]?.id ?? /"rest_id":"(\d+)"/.exec(JSON.stringify(cap.json))?.[1]
+      if (!id) throw new Error('X accepted the post but returned no id')
+      this.log(`posted ${quoteId ? 'quote' : replyToId ? 'reply' : 'post'} ${id} through the web session`)
+      return id
+    })
+  }
+
   /** Follow an account from the browsing account by pressing Follow on its profile. */
   async follow(handle: string): Promise<'followed' | 'already' | 'failed'> {
     return this.run(async () => {
@@ -399,19 +479,19 @@ export class XBrowser {
   }
 }
 
-/** Visible login window for the BROWSING account, sharing the hidden browser's partition. */
-export function openLoginWindow(parent?: BrowserWindow, mode: 'login' | 'signup' = 'login'): Promise<void> {
+/** Visible login window sharing a hidden browser's partition: the browsing account's by default, or your own account's web session. */
+export function openLoginWindow(parent?: BrowserWindow, mode: 'login' | 'signup' = 'login', partition = PARTITION): Promise<void> {
   return new Promise((resolve) => {
     const win = new BrowserWindow({
       width: 520,
       height: 760,
       parent,
-      title: mode === 'signup' ? 'Create the browsing account' : 'Log in to X with your browsing account',
-      webPreferences: { partition: PARTITION, contextIsolation: true, sandbox: true }
+      title: partition === REAL_PARTITION ? 'Log in to X with your own account' : mode === 'signup' ? 'Create the browsing account' : 'Log in to X with your browsing account',
+      webPreferences: { partition, contextIsolation: true, sandbox: true }
     })
     win.loadURL(mode === 'signup' ? 'https://x.com/i/flow/signup' : 'https://x.com/i/flow/login')
     const check = async (): Promise<void> => {
-      if ((await hasAuthCookie()) && /x\.com\/(home|$)/.test(win.webContents.getURL())) {
+      if ((await hasAuthCookie(partition)) && /x\.com\/(home|$)/.test(win.webContents.getURL())) {
         setTimeout(() => {
           if (!win.isDestroyed()) win.close()
         }, 1200)
