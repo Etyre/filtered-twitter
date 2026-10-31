@@ -58,9 +58,12 @@ export default function TodayView({
               <button className={section === 'rest' ? 'on' : ''} onClick={() => setSection('rest')}>Filtered</button>
             </div>
           ) : null}
-          <button className={edition && !stale ? 'secondary' : 'primary'} disabled={!!building} onClick={() => void onBuild(!!edition && !stale)}>
-            {building ? 'Building…' : edition && !stale ? 'Rebuild' : "Build today's edition"}
-          </button>
+          {/* Once today's edition exists it stays as it is: one finite edition a day, no rebuilding. */}
+          {building || !edition || stale ? (
+            <button className="primary" disabled={!!building} onClick={() => void onBuild(false)}>
+              {building ? 'Building…' : "Build today's edition"}
+            </button>
+          ) : null}
         </div>
       </header>
 
