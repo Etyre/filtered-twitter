@@ -11,7 +11,7 @@
     "start": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "package": "electron-vite build && electron-builder --mac --dir",
-    "install-app": "npm run package && rm -rf \"/Applications/Filtered Twitter.app\" && cp -R \"dist/mac-arm64/Filtered Twitter.app\" /Applications/ && xattr -cr \"/Applications/Filtered Twitter.app\" && codesign --force --deep --sign - \"/Applications/Filtered Twitter.app\""
+    "install-app": "npm run package && npx asar list \"dist/mac-arm64/Filtered Twitter.app/Contents/Resources/app.asar\" | grep -q /out/renderer/index.html || { echo 'Packaged app is missing out/renderer; not installing.'; exit 1; }; rm -rf \"/Applications/Filtered Twitter.app\" && cp -R \"dist/mac-arm64/Filtered Twitter.app\" /Applications/ && xattr -cr \"/Applications/Filtered Twitter.app\" && codesign --force --deep --sign - \"/Applications/Filtered Twitter.app\""
   },
   "build": {
     "appId": "com.elityre.filteredtwitter",
