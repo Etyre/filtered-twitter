@@ -21,10 +21,10 @@ if (typeof speechSynthesis !== 'undefined') speechSynthesis.addEventListener('vo
 const spoken = (text: string): string => text.replace(/https?:\/\/\S+/g, 'link').replace(/(^|[\s(])@(\w)/g, '$1$2')
 
 /**
- * Reads the parts one after another, with a short breath between them, and calls onEnd when done or stopped.
+ * Reads the parts one after another, with a short breath between them, at `rate` times normal pace, and calls onEnd when done or stopped.
  * Returns a function that stops the reading.
  */
-export function speak(parts: string[], onEnd: () => void): () => void {
+export function speak(parts: string[], onEnd: () => void, rate = 1): () => void {
   const texts = parts.map((p) => spoken(p.trim())).filter(Boolean)
   speechSynthesis.cancel()
   let ended = false
@@ -37,7 +37,7 @@ export function speak(parts: string[], onEnd: () => void): () => void {
     const u = new SpeechSynthesisUtterance(i < texts.length - 1 ? t + ' .' : t) // the pause between parts of a thread
     const v = voice()
     if (v) u.voice = v
-    u.rate = 1
+    u.rate = Math.min(2, Math.max(0.5, rate || 1))
     u.onerror = (e) => { if (e.error !== 'interrupted' && e.error !== 'canceled') finish() }
     return u
   })

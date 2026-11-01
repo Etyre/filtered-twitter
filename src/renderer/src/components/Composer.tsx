@@ -45,16 +45,17 @@ export default function Composer({ replyToId, quoteId, network = 'x', onDone, on
   const update = (i: number, v: string): void => setParts((p) => p.map((x, j) => (j === i ? v : x)))
 
   /** Reads the whole draft aloud, every part of the thread in order, or stops a reading under way. */
-  const readAloud = (): void => {
+  const readAloud = async (): Promise<void> => {
     if (stopSpeaking.current) {
       stopSpeaking.current()
       return
     }
     setSpeaking(true)
+    const { speechRate } = await window.api.getSettings() // the pace set in Settings, as it is right now
     stopSpeaking.current = speak(parts, () => {
       stopSpeaking.current = null
       setSpeaking(false)
-    })
+    }, speechRate)
   }
   useEffect(() => () => stopSpeaking.current?.(), []) // leaving the composer stops the voice
   const over = parts.some((p) => [...p].length > LIMIT)
@@ -172,7 +173,7 @@ export default function Composer({ replyToId, quoteId, network = 'x', onDone, on
         {!replyToId || parts.length > 0 ? <button className="link" onClick={() => setParts((x) => [...x, ''])}>+ Add to thread</button> : null}
         <span className="spacer" />
         {onCancel ? <button className="link" onClick={onCancel}>Cancel</button> : null}
-        <button className="secondary speak" disabled={empty && !speaking} onClick={readAloud} title={speaking ? 'Stop reading' : 'Read the whole draft aloud'}>
+        <button className="secondary speak" disabled={empty && !speaking} onClick={() => void readAloud()} title={speaking ? 'Stop reading' : 'Read the whole draft aloud'}>
           {speaking ? '■ Stop' : '🔊 Read aloud'}
         </button>
         <button className="primary" disabled={busy || over || empty} onClick={() => void submit()}>{busy ? 'Posting…' : replyToId ? 'Reply' : quoteId ? 'Quote' : parts.length > 1 ? 'Post thread' : 'Post'}</button>

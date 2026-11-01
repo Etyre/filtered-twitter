@@ -227,6 +227,8 @@ export interface Settings {
   autoTranslate: boolean
   /** How often to check for replies, mentions, and quotes, in minutes; 0 means only by hand. */
   notifyEveryMinutes: number
+  /** How fast the Read aloud button speaks, as a multiple of the voice's normal pace (0.5 to 2). */
+  speechRate: number
   /** Pull recent likes and replies from your real account daily, through the API, as training signal. */
   historySync: boolean
   lastHistorySyncDate: string | null

@@ -256,3 +256,7 @@ code { font-size: 12px; background: var(--tag); padding: 1px 4px; border-radius:
 .claude-compose-row { display: flex; justify-content: space-between; align-items: center; }
 .claude-status { font-style: italic; }
 .claude-status::before { content: ''; display: inline-block; width: 10px; height: 10px; margin-right: 6px; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.9s linear infinite; vertical-align: -1px; }
+
+/* Settings → Reading aloud */
+.settings input[type=range] { width: 200px; }
+.settings .rate { min-width: 3em; font-variant-numeric: tabular-nums; }

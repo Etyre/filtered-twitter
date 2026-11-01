@@ -1,5 +1,6 @@
 import type React from 'react'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { speak } from '../speech'
 import type { BackupStatus, HistoryStatus, IpCheck, ScorerStats, Secrets, SessionStatus, Settings } from '@shared/types'
 
 export default function SettingsView({
@@ -14,6 +15,8 @@ export default function SettingsView({
   onSession: (s: SessionStatus) => void
 }): React.JSX.Element {
   const [draft, setDraft] = useState<Settings | null>(settings)
+  const stopSample = useRef<(() => void) | null>(null) // the Reading aloud sample, while it plays
+  useEffect(() => () => stopSample.current?.(), [])
   const [secrets, setSecrets] = useState<Secrets>({})
   const [stats, setStats] = useState<ScorerStats | null>(null)
   const [backup, setBackup] = useState<BackupStatus | null>(null)
@@ -115,6 +118,16 @@ export default function SettingsView({
             <button className="primary" onClick={async () => setWeb(await window.api.openWebLogin())}>Log in</button>
           )}
         </div>
+      </section>
+
+      <section>
+        <h2>Reading aloud</h2>
+        <p className="muted small">The Read aloud button in the composer uses the Mac's voice. Set how fast it speaks.</p>
+        <label>Speed
+          <input type="range" min={0.5} max={2} step={0.1} value={draft.speechRate} onChange={(e) => set('speechRate', Number(e.target.value))} />
+          <span className="rate">{draft.speechRate.toFixed(1)}×</span>
+          <button className="secondary" onClick={() => { stopSample.current?.(); stopSample.current = speak(['This is how your replies will sound when read aloud.'], () => { stopSample.current = null }, draft.speechRate) }}>Try it</button>
+        </label>
       </section>
 
       <section>

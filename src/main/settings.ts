@@ -46,6 +46,7 @@ export const DEFAULTS: Settings = {
   ordering: 'priority',
   autoTranslate: false,
   notifyEveryMinutes: 60,
+  speechRate: 1,
   historySync: true,
   lastHistorySyncDate: null,
   historyImportedAt: null,
