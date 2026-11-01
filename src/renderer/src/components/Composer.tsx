@@ -2,6 +2,7 @@ import type React from 'react'
 import { useEffect, useRef, useState } from 'react'
 import type { HandleSuggestion, PostNetwork } from '@shared/types'
 import { isBskyId } from '@shared/net'
+import { speak } from '../speech'
 
 /** X allows Premium accounts 25,000 characters (a post past 280 is a long post); Bluesky allows 300, and a post going to both must fit the smaller. */
 const X_LIMIT = 25_000
@@ -27,6 +28,8 @@ export default function Composer({ replyToId, quoteId, network = 'x', onDone, on
   const [msg, setMsg] = useState<string | null>(null)
   const [refused, setRefused] = useState(false) // X's API would not take this reply; offer the website instead
   const [mention, setMention] = useState<Mention | null>(null) // the @handle menu open under one part, if any
+  const [speaking, setSpeaking] = useState(false) // the draft is being read aloud
+  const stopSpeaking = useRef<(() => void) | null>(null)
   const boxes = useRef<(HTMLTextAreaElement | null)[]>([])
   const lookup = useRef(0) // answers to older lookups are ignored
 
@@ -40,6 +43,20 @@ export default function Composer({ replyToId, quoteId, network = 'x', onDone, on
   }
 
   const update = (i: number, v: string): void => setParts((p) => p.map((x, j) => (j === i ? v : x)))
+
+  /** Reads the whole draft aloud, every part of the thread in order, or stops a reading under way. */
+  const readAloud = (): void => {
+    if (stopSpeaking.current) {
+      stopSpeaking.current()
+      return
+    }
+    setSpeaking(true)
+    stopSpeaking.current = speak(parts, () => {
+      stopSpeaking.current = null
+      setSpeaking(false)
+    })
+  }
+  useEffect(() => () => stopSpeaking.current?.(), []) // leaving the composer stops the voice
   const over = parts.some((p) => [...p].length > LIMIT)
   const empty = parts.every((p) => !p.trim())
 
@@ -99,6 +116,7 @@ export default function Composer({ replyToId, quoteId, network = 'x', onDone, on
   }
 
   const submit = async (): Promise<void> => {
+    stopSpeaking.current?.()
     setBusy(true)
     setMsg(null)
     setRefused(false)
@@ -154,6 +172,9 @@ export default function Composer({ replyToId, quoteId, network = 'x', onDone, on
         {!replyToId || parts.length > 0 ? <button className="link" onClick={() => setParts((x) => [...x, ''])}>+ Add to thread</button> : null}
         <span className="spacer" />
         {onCancel ? <button className="link" onClick={onCancel}>Cancel</button> : null}
+        <button className="secondary speak" disabled={empty && !speaking} onClick={readAloud} title={speaking ? 'Stop reading' : 'Read the whole draft aloud'}>
+          {speaking ? '■ Stop' : '🔊 Read aloud'}
+        </button>
         <button className="primary" disabled={busy || over || empty} onClick={() => void submit()}>{busy ? 'Posting…' : replyToId ? 'Reply' : quoteId ? 'Quote' : parts.length > 1 ? 'Post thread' : 'Post'}</button>
       </div>
       {msg ? <div className={'small ' + (msg.startsWith('Failed') ? 'error' : 'muted')}>{msg}</div> : null}
