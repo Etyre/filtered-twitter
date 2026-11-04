@@ -2,6 +2,7 @@ import type React from 'react'
 import { useEffect, useRef, useState } from 'react'
 import type { DmMessage, DmSummary, Settings, Tweet } from '@shared/types'
 import { timeAgo, TweetBody } from './TweetCard'
+import { useDraft } from '../drafts'
 
 /** A post shared in a message, loaded through the browsing account and shown as a compact card. */
 function SharedPost({ id }: { id: string }): React.JSX.Element {
@@ -47,8 +48,10 @@ function MessageText({ m }: { m: DmMessage }): React.JSX.Element {
 export default function ChatView({ settings }: { settings: Settings | null }): React.JSX.Element {
   const [data, setData] = useState<DmSummary | null>(null)
   const [busy, setBusy] = useState(false)
-  const [selected, setSelected] = useState<string | null>(null)
-  const [draft, setDraft] = useState('')
+  const [selected, setSelected] = useDraft<string | null>('dm:selected', null)
+  const [drafts, setDrafts] = useDraft<Record<string, string>>('dm:drafts', {}) // unsent text, per conversation
+  const draft = selected ? drafts[selected] ?? '' : ''
+  const setDraft = (text: string): void => { if (selected) setDrafts((d) => ({ ...d, [selected]: text })) }
   const [sendErr, setSendErr] = useState<string | null>(null)
   const bottom = useRef<HTMLDivElement>(null)
 

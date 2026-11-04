@@ -1,12 +1,12 @@
 import type React from 'react'
-import { useState } from 'react'
+import { useDraft } from '../drafts'
 import type { PostNetwork, Settings } from '@shared/types'
 import Composer from './Composer'
 
 export default function ComposeView({ settings }: { settings: Settings | null }): React.JSX.Element {
   const xReady = !!settings?.hasXApiKeys
   const bskyReady = !!settings?.bskyEnabled && !!settings?.bskyHandle && !!settings?.hasBskyPassword
-  const [network, setNetwork] = useState<PostNetwork>(xReady || !bskyReady ? 'x' : 'bsky')
+  const [network, setNetwork] = useDraft<PostNetwork>('compose:network', xReady || !bskyReady ? 'x' : 'bsky')
   const as = network === 'x' ? `@${settings?.xHandle || 'your X account'}` : network === 'bsky' ? `@${settings?.bskyHandle || 'your Bluesky account'}` : `@${settings?.xHandle} and @${settings?.bskyHandle}`
   return (
     <div className="today narrow">

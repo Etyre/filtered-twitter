@@ -1,6 +1,7 @@
 import type React from 'react'
 import { useEffect, useRef, useState } from 'react'
 import type { ChatMessage, Tweet } from '@shared/types'
+import { readDraft, writeDraft } from '../drafts'
 
 // A side panel for talking with Claude about one post and the discussion around it.
 // Opened from any post's "Talk to Claude" button; transcripts are kept per post for the session.
@@ -56,7 +57,7 @@ export default function ClaudePanel(): React.JSX.Element | null {
     listener = (t) => {
       setTweet(t)
       setErr(null)
-      setDraft('')
+      setDraft(t ? readDraft<string>(`claude:${t.id}`) ?? '' : '')
       setMessages(t ? transcripts.get(t.id) ?? [] : [])
       setTimeout(() => input.current?.focus(), 50)
     }
@@ -94,6 +95,7 @@ export default function ClaudePanel(): React.JSX.Element | null {
     const requestId = `${tweet.id}:${Date.now()}`
     setMessages([...history, { role: 'assistant', text: '' }])
     setDraft('')
+    writeDraft(`claude:${tweet.id}`, '')
     setErr(null)
     setBusy(requestId)
     busyRef.current = requestId
@@ -143,7 +145,7 @@ export default function ClaudePanel(): React.JSX.Element | null {
         {err ? <div className="error small">{err}</div> : null}
       </div>
       <div className="claude-compose">
-        <textarea ref={input} rows={2} value={draft} placeholder="Ask about this post… (Enter to send, Shift+Enter for a new line)" onChange={(e) => setDraft(e.target.value)} onKeyDown={onKey} />
+        <textarea ref={input} rows={2} value={draft} placeholder="Ask about this post… (Enter to send, Shift+Enter for a new line)" onChange={(e) => { setDraft(e.target.value); writeDraft(`claude:${tweet.id}`, e.target.value) }} onKeyDown={onKey} />
         <div className="claude-compose-row">
           {messages.length ? <button className="link small" disabled={!!busy} onClick={() => { setMessages([]); setErr(null) }}>Clear</button> : <span />}
           {busy ? (

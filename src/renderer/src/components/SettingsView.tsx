@@ -1,6 +1,7 @@
 import type React from 'react'
 import { useEffect, useRef, useState } from 'react'
 import { speak } from '../speech'
+import { useDraft } from '../drafts'
 import type { BackupStatus, HistoryStatus, IpCheck, ScorerStats, Secrets, SessionStatus, Settings } from '@shared/types'
 
 export default function SettingsView({
@@ -14,10 +15,11 @@ export default function SettingsView({
   onSettings: (s: Settings) => void
   onSession: (s: SessionStatus) => void
 }): React.JSX.Element {
-  const [draft, setDraft] = useState<Settings | null>(settings)
+  // Unsaved edits outlive the screen: leaving Settings and coming back finds them, until Save or a change made elsewhere.
+  const [draft, setDraft] = useDraft<Settings | null>('settings:draft', settings)
   const stopSample = useRef<(() => void) | null>(null) // the Reading aloud sample, while it plays
   useEffect(() => () => stopSample.current?.(), [])
-  const [secrets, setSecrets] = useState<Secrets>({})
+  const [secrets, setSecrets] = useDraft<Secrets>('settings:secrets', {})
   const [stats, setStats] = useState<ScorerStats | null>(null)
   const [backup, setBackup] = useState<BackupStatus | null>(null)
   const [history, setHistory] = useState<HistoryStatus | null>(null)
@@ -27,11 +29,14 @@ export default function SettingsView({
   const [web, setWeb] = useState<SessionStatus | null>(null) // your own account's web session
   const [msg, setMsg] = useState<string | null>(null)
   // Raw text for the list fields, so typing a newline is not parsed away mid-keystroke.
-  const [priorityText, setPriorityText] = useState(settings?.priorityHandles.join('\n') ?? '')
-  const [searchText, setSearchText] = useState(settings?.searchQueries.join('\n') ?? '')
-  const [bskyPriorityText, setBskyPriorityText] = useState(settings?.bskyPriorityHandles.join('\n') ?? '')
-  const [bskySearchText, setBskySearchText] = useState(settings?.bskySearchQueries.join('\n') ?? '')
+  const [priorityText, setPriorityText] = useDraft('settings:priorityText', settings?.priorityHandles.join('\n') ?? '')
+  const [searchText, setSearchText] = useDraft('settings:searchText', settings?.searchQueries.join('\n') ?? '')
+  const [bskyPriorityText, setBskyPriorityText] = useDraft('settings:bskyPriorityText', settings?.bskyPriorityHandles.join('\n') ?? '')
+  const [bskySearchText, setBskySearchText] = useDraft('settings:bskySearchText', settings?.bskySearchQueries.join('\n') ?? '')
+  const [from, setFrom] = useDraft<Settings | null>('settings:from', settings) // the settings the draft was taken from
   useEffect(() => {
+    if (settings === from) return // same settings as the draft came from: keep what has been typed
+    setFrom(settings)
     setDraft(settings)
     setPriorityText(settings?.priorityHandles.join('\n') ?? '')
     setSearchText(settings?.searchQueries.join('\n') ?? '')

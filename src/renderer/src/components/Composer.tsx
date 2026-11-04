@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { HandleSuggestion, PostNetwork } from '@shared/types'
 import { isBskyId } from '@shared/net'
 import { speak } from '../speech'
+import { useDraft } from '../drafts'
 
 /** X allows Premium accounts 25,000 characters (a post past 280 is a long post); Bluesky allows 300, and a post going to both must fit the smaller. */
 const X_LIMIT = 25_000
@@ -23,7 +24,8 @@ export default function Composer({ replyToId, quoteId, network = 'x', onDone, on
   const anchor = replyToId ?? quoteId
   const where: PostNetwork = anchor ? (isBskyId(anchor) ? 'bsky' : 'x') : network
   const LIMIT = limitFor(where)
-  const [parts, setParts] = useState<string[]>([''])
+  // The draft outlives this box: a reply half-written when the reader leaves the screen is there when they return.
+  const [parts, setParts] = useDraft<string[]>(`composer:${replyToId ? 'reply:' + replyToId : quoteId ? 'quote:' + quoteId : 'new:' + where}`, [''])
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState<string | null>(null)
   const [refused, setRefused] = useState(false) // X's API would not take this reply; offer the website instead
