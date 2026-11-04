@@ -113,7 +113,7 @@ export default function SettingsView({
         <p className="muted small">
           Since February 2026, X's self-serve API lets an app reply to or quote only posts whose author mentioned you. Basic and Pro do not lift this; only Enterprise does.
           Log in here with your own account and the app posts those replies and quotes the way the website does, in a hidden window, still using the API for everything else.
-          Leave it logged out and the composer offers to open X with your draft instead. This session is never proxied and never used for reading.
+          Leave it logged out and the composer asks for this login the first time it needs it. This session is never proxied and never used for reading.
         </p>
         <div className="row">
           <span>{web?.loggedIn ? `Logged in${web.handle ? ' as @' + web.handle : ''}` : 'Not logged in'}</span>

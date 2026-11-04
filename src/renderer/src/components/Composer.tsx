@@ -28,7 +28,7 @@ export default function Composer({ replyToId, quoteId, network = 'x', onDone, on
   const [parts, setParts] = useDraft<string[]>(`composer:${replyToId ? 'reply:' + replyToId : quoteId ? 'quote:' + quoteId : 'new:' + where}`, [''])
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState<string | null>(null)
-  const [refused, setRefused] = useState(false) // X's API would not take this reply; offer the website instead
+  const [refused, setRefused] = useState<'login' | 'failed' | null>(null) // X's API would not take this reply: your own account can post it, once logged in
   const [mention, setMention] = useState<Mention | null>(null) // the @handle menu open under one part, if any
   const [speaking, setSpeaking] = useState(false) // the draft is being read aloud
   const stopSpeaking = useRef<(() => void) | null>(null)
@@ -122,18 +122,33 @@ export default function Composer({ replyToId, quoteId, network = 'x', onDone, on
     stopSpeaking.current?.()
     setBusy(true)
     setMsg(null)
-    setRefused(false)
+    setRefused(null)
     const texts = parts.map((p) => p.trim()).filter(Boolean)
     const r = await window.api.postThread(texts, replyToId, quoteId, where)
     setBusy(false)
+    if (r.needsWebLogin) {
+      // The API will not take this one; your own account's web session will. Ask for that login here, then post again.
+      setMsg(null)
+      setRefused('login')
+      return
+    }
     if (r.ok) {
       setMsg(`Posted${texts.length > 1 ? ` ${r.ids.length} posts` : ''}${r.via === 'web' ? ' through your web session' : ''}.`)
       setParts([''])
       setTimeout(onDone, 900)
     } else {
       setMsg(`Failed${r.ids.length ? ` after ${r.ids.length} post(s)` : ''}: ${r.error}`)
-      if (where === 'x' && /403/.test(r.error ?? '') && /mentioned|author/.test(r.error ?? '')) setRefused(true)
+      if (/web session failed/.test(r.error ?? '')) setRefused('failed')
     }
+  }
+
+  /** Logs your own account in to x.com in a window, then sends the draft again through it. */
+  const loginAndPost = async (): Promise<void> => {
+    setBusy(true)
+    const s = await window.api.openWebLogin()
+    setBusy(false)
+    if (s.loggedIn) await submit()
+    else setMsg('Not logged in; the draft is kept.')
   }
 
   return (
@@ -181,10 +196,17 @@ export default function Composer({ replyToId, quoteId, network = 'x', onDone, on
         <button className="primary" disabled={busy || over || empty} onClick={() => void submit()}>{busy ? 'Posting…' : replyToId ? 'Reply' : quoteId ? 'Quote' : parts.length > 1 ? 'Post thread' : 'Post'}</button>
       </div>
       {msg ? <div className={'small ' + (msg.startsWith('Failed') ? 'error' : 'muted')}>{msg}</div> : null}
-      {refused ? (
+      {refused === 'login' ? (
         <div className="small muted refused">
-          X's API only lets an app reply to or quote posts whose author mentioned you. The draft is kept: log in with your own account under Settings → Your account's web session and press the button again,
-          or <button className="link" onClick={replyOnX}>reply on X instead</button>, which opens x.com with it filled in.
+          X's API only lets an app reply to or quote posts whose author mentioned you, so the app posts these through x.com as you. Log in with your own account once, and it goes out right away; the login is kept for next time.
+          <div className="actions">
+            <button className="primary" disabled={busy} onClick={() => void loginAndPost()}>{busy ? 'Posting…' : 'Log in to X and post'}</button>
+            <button className="link" onClick={replyOnX}>Reply on x.com instead</button>
+          </div>
+        </div>
+      ) : refused === 'failed' ? (
+        <div className="small muted refused">
+          The draft is kept. Press the button to try again, or <button className="link" onClick={replyOnX}>reply on x.com instead</button>, which opens it with the text filled in.
         </div>
       ) : null}
     </div>

@@ -328,6 +328,8 @@ export interface PostResult {
   error?: string
   /** web: at least one part went through your own web session because the API refused it. */
   via?: 'api' | 'web'
+  /** X's API refused this reply or quote, and your own account is not logged in to post it through the website. */
+  needsWebLogin?: boolean
 }
 
 export interface IpCheck {

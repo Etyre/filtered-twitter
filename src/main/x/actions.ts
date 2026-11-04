@@ -92,7 +92,8 @@ export async function postThread(texts: string[], replyToId?: string, quoteId?: 
     try {
       ids.push(await official.createPost(text, parent, quote))
     } catch (e) {
-      if (!(apiRefused(e) && web && (await web.isLoggedIn()))) return { ok: false, ids, error: errMsg(e) }
+      if (!apiRefused(e)) return { ok: false, ids, error: errMsg(e) }
+      if (!web || !(await web.isLoggedIn())) return { ok: false, ids, error: errMsg(e), needsWebLogin: true }
       try {
         ids.push(await web.postViaWeb(text, parent, quote)) // later parts answer your own post, which the API allows
         via = 'web'
