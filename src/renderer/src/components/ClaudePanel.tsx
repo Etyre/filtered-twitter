@@ -13,6 +13,33 @@ export function openClaudeChat(tweet: Tweet): void {
   listener?.(tweet)
 }
 
+/**
+ * Claude's replies come as light Markdown even when asked for plain prose: bold and italic
+ * emphasis, inline code, and bare links. This renders just those inline marks; line breaks and
+ * "-" lists come through as written, since the message keeps its whitespace.
+ */
+function renderInline(text: string): React.ReactNode[] {
+  const out: React.ReactNode[] = []
+  const re = /\*\*(.+?)\*\*|(?<![\w*])\*(?!\s)(.+?)(?<!\s)\*(?![\w*])|(?<![\w_])_(?!\s)(.+?)(?<!\s)_(?![\w_])|`([^`\n]+)`|(https?:\/\/[^\s<>()]+[^\s<>().,;:!?'"\]])/g
+  let last = 0
+  let m: RegExpExecArray | null
+  while ((m = re.exec(text))) {
+    if (m.index > last) out.push(text.slice(last, m.index))
+    const k = out.length
+    if (m[1] !== undefined) out.push(<strong key={k}>{renderInline(m[1])}</strong>)
+    else if (m[2] !== undefined) out.push(<em key={k}>{renderInline(m[2])}</em>)
+    else if (m[3] !== undefined) out.push(<em key={k}>{renderInline(m[3])}</em>)
+    else if (m[4] !== undefined) out.push(<code key={k}>{m[4]}</code>)
+    else {
+      const url = m[5]
+      out.push(<a key={k} href={url} onClick={(e) => { e.preventDefault(); void window.api.openExternal(url) }}>{url}</a>)
+    }
+    last = m.index + m[0].length
+  }
+  if (last < text.length) out.push(text.slice(last))
+  return out
+}
+
 const SUGGESTIONS = ['What is this about?', 'What am I missing here?', 'Is this true?', 'Steelman the best reply.', 'Draft a reply for me.']
 
 export default function ClaudePanel(): React.JSX.Element | null {
@@ -109,7 +136,7 @@ export default function ClaudePanel(): React.JSX.Element | null {
         ) : null}
         {messages.map((m, i) => (
           <div key={i} className={`claude-msg ${m.role}`}>
-            {m.text || (busy && !status ? <span className="muted">Thinking…</span> : null)}
+            {m.text ? (m.role === 'assistant' ? renderInline(m.text) : m.text) : busy && !status ? <span className="muted">Thinking…</span> : null}
           </div>
         ))}
         {busy && status ? <div className="muted small claude-status">{status}</div> : null}

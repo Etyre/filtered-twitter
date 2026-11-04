@@ -251,6 +251,8 @@ code { font-size: 12px; background: var(--tag); padding: 1px 4px; border-radius:
 .claude-msg { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px; line-height: 1.5; }
 .claude-msg.user { align-self: flex-end; max-width: 85%; background: var(--accent); color: var(--accent-ink); border-radius: 14px; padding: 7px 12px; }
 .claude-msg.assistant { padding: 2px 0; }
+.claude-msg.assistant code { font-size: 13px; background: var(--bg); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }
+.claude-msg.assistant a { overflow-wrap: anywhere; }
 .claude-compose { border-top: 1px solid var(--line); padding: 10px 16px 14px; display: flex; flex-direction: column; gap: 8px; }
 .claude-compose textarea { background: var(--bg); }
 .claude-compose-row { display: flex; justify-content: space-between; align-items: center; }
