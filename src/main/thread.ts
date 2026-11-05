@@ -93,10 +93,14 @@ async function fetchThread(browser: XBrowser, tweetId: string): Promise<Thread> 
     arr.push(t)
     children.set(t.inReplyToId, arr)
   }
+  // Other people's replies nest at most seven deep; the author's own run is followed to its end, however long
+  // the thread, since each part is a reply to the one before and the view shows them as one run.
+  const author = focal.author.handle.toLowerCase()
   const build = (id: string, depth: number): ReplyNode[] => {
-    if (depth > 6) return []
     const kids = (children.get(id) ?? []).sort((a, b) => b.likes - a.likes)
-    return kids.map((t) => ({ tweet: t, children: build(t.id, depth + 1) }))
+    return kids
+      .filter((t) => depth <= 6 || t.author.handle.toLowerCase() === author)
+      .map((t) => ({ tweet: t, children: build(t.id, depth + 1) }))
   }
   return { focal, ancestors, replies: build(tweetId, 0) }
 }
