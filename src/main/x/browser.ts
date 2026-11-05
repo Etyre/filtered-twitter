@@ -5,7 +5,7 @@
 // web session, used only to post the replies and quotes the API refuses.
 import { app, BrowserWindow, session } from 'electron'
 import type { Author, Tweet } from '@shared/types'
-import { collectTweets, parseUser } from './parse'
+import { collectTweets, parseTweet, parseUser } from './parse'
 
 export interface Captured {
   url: string
@@ -445,7 +445,10 @@ export class XBrowser {
       if (n === before) throw new Error('no answer from X after pressing Post')
       const cap = this.captures.filter((c) => c.op === 'CreateTweet').pop()!
       if (isRecordWithErrors(cap.json) && cap.json.errors.length) throw new Error(cap.json.errors.map((e) => e.message).join('; '))
-      const id = collectTweets(cap.json)[0]?.id ?? /"rest_id":"(\d+)"/.exec(JSON.stringify(cap.json))?.[1]
+      // The new post sits at data.create_tweet.tweet_results; it carries no __typename, so the generic walk misses it,
+      // and the first rest_id in the response can be the author's user id rather than the post's.
+      const created = (cap.json as { data?: { create_tweet?: { tweet_results?: { result?: { rest_id?: string } } } } }).data?.create_tweet?.tweet_results
+      const id = parseTweet(created)?.id ?? created?.result?.rest_id ?? collectTweets(cap.json)[0]?.id
       if (!id) throw new Error('X accepted the post but returned no id')
       this.log(`posted ${quoteId ? 'quote' : replyToId ? 'reply' : 'post'} ${id} through the web session`)
       return id
