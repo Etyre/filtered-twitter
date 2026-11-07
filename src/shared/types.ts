@@ -242,6 +242,11 @@ export interface Settings {
   bskySearchQueries: string[]
   /** Pages of the Bluesky following feed to read (100 posts each). */
   bskyPages: number
+  /** Keep the app closed each day until the Anki review is done: the deck has only learning cards left, or ankiTarget of its cards were answered. */
+  ankiGate: boolean
+  /** Anki deck the review is measured on, subdecks included. */
+  ankiDeck: string
+  ankiTarget: number
 }
 
 export interface HistoryStatus {
@@ -338,6 +343,11 @@ export interface IpCheck {
   error?: string
 }
 
+/** Whether today's Anki review is done, which the app waits on before showing anything. */
+export type AnkiGate =
+  | { open: true }
+  | { open: false; reviewed: number | null; target: number; deck: string; note: string | null }
+
 export interface Api {
   getSettings(): Promise<Settings>
   saveSettings(patch: Partial<Settings>): Promise<Settings>
@@ -398,6 +408,8 @@ export interface Api {
   restoreBackup(): Promise<{ ok: boolean; imported: number; error?: string }>
   openBackupFolder(): Promise<void>
   openExternal(url: string): Promise<void>
+  getAnkiGate(): Promise<AnkiGate>
+  openAnki(): Promise<void>
 
   onProgress(cb: (p: Progress) => void): () => void
   onChatDelta(cb: (requestId: string, delta: ChatDelta) => void): () => void

@@ -271,6 +271,14 @@ export default function SettingsView({
       </section>
 
       <section>
+        <h2>Anki first</h2>
+        <label><input type="checkbox" checked={draft.ankiGate} onChange={(e) => set('ankiGate', e.target.checked)} /> Keep the app closed each day until today’s Anki review is done</label>
+        <label>Deck (subdecks included) <input type="text" value={draft.ankiDeck} onChange={(e) => set('ankiDeck', e.target.value)} /></label>
+        <label>Done when only learning cards are left, or after <input type="number" min={1} max={1000} value={draft.ankiTarget} onChange={(e) => set('ankiTarget', Number(e.target.value))} /> cards answered</label>
+        <p className="muted small">Once open, the app stays open until Anki’s next day begins. Changes to the deck or count take effect the next day if today’s review already counts as done.</p>
+      </section>
+
+      <section>
         <h2>Priority accounts</h2>
         <p className="muted small">Every original post from these accounts goes in, no cap. One handle per line.</p>
         <textarea rows={6} value={priorityText} onChange={(e) => { setPriorityText(e.target.value); set('priorityHandles', e.target.value.split(/\n|,/).map((x) => x.trim().replace(/^@/, '')).filter(Boolean)) }} placeholder={'@someone\n@someone_else'} />

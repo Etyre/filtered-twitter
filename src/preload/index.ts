@@ -48,6 +48,8 @@ const api: Api = {
   restoreBackup: () => ipcRenderer.invoke('backup:restore'),
   openBackupFolder: () => ipcRenderer.invoke('backup:open'),
   openExternal: (url) => ipcRenderer.invoke('openExternal', url),
+  getAnkiGate: () => ipcRenderer.invoke('anki:gate'),
+  openAnki: () => ipcRenderer.invoke('anki:open'),
   onChatDelta: (cb) => {
     const handler = (_e: unknown, requestId: string, delta: ChatDelta): void => cb(requestId, delta)
     ipcRenderer.on('chat:delta', handler)

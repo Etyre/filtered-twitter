@@ -56,7 +56,10 @@ export const DEFAULTS: Settings = {
   hasBskyPassword: false,
   bskyPriorityHandles: [],
   bskySearchQueries: ['"AI safety"', '"frontier model"', 'Anthropic', 'OpenAI', 'DeepMind'],
-  bskyPages: 5
+  bskyPages: 5,
+  ankiGate: true,
+  ankiDeck: 'Daily review',
+  ankiTarget: 80
 }
 
 const SECRET_KEYS: (keyof Secrets)[] = ['anthropicApiKey', 'xConsumerKey', 'xConsumerSecret', 'xAccessToken', 'xAccessSecret', 'bskyAppPassword', 'bskySession']

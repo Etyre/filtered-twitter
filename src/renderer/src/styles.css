@@ -66,6 +66,10 @@ h3 { font-size: 14px; font-weight: 600; margin: 18px 0 8px; }
 .segmented button { padding: 6px 10px; font-size: 13px; }
 .segmented button.on { background: var(--tag); font-weight: 600; }
 
+.anki-gate { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px; padding: 16px; text-align: center; -webkit-app-region: drag; }
+.anki-gate p { max-width: 420px; margin: 0; }
+.anki-button { -webkit-app-region: no-drag; background: var(--accent); color: var(--accent-ink); font-size: 28px; font-weight: 600; padding: 28px 64px; border-radius: 16px; }
+.anki-button:hover { filter: brightness(1.08); }
 .welcome { max-width: 520px; margin: 80px auto; }
 .welcome h1 { font-size: 34px; margin-bottom: 12px; }
 .welcome .primary { margin: 16px 0; }

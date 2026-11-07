@@ -1,6 +1,6 @@
 import type React from 'react'
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import type { Edition, Progress, SessionStatus, Settings } from '@shared/types'
+import type { AnkiGate, Edition, Progress, SessionStatus, Settings } from '@shared/types'
 import Sidebar, { type View } from './components/Sidebar'
 import TodayView from './components/TodayView'
 import ArchiveView from './components/ArchiveView'
@@ -31,6 +31,21 @@ export default function App(): React.JSX.Element {
   const [edition, setEdition] = useState<Edition | null>(null)
   const [progress, setProgress] = useState<Progress | null>(null)
   const content = useRef<HTMLElement>(null)
+
+  // Nothing shows until today's Anki review is done. Check often while waiting, rarely once open (to close again when Anki's day turns).
+  const [gate, setGate] = useState<AnkiGate | null>(null)
+  const gateOpen = gate?.open ?? false
+  useEffect(() => {
+    let alive = true
+    const check = async (): Promise<void> => {
+      const g = await window.api.getAnkiGate()
+      if (alive) setGate(g)
+    }
+    void check()
+    const timer = setInterval(() => void check(), gateOpen ? 5 * 60_000 : 5000)
+    window.addEventListener('focus', check)
+    return () => { alive = false; clearInterval(timer); window.removeEventListener('focus', check) }
+  }, [gateOpen, settings?.ankiGate])
 
   // Navigation history, like a browser's: every page, edition or discussion opened is an entry,
   // and back/forward return to it at the same scroll position.
@@ -123,6 +138,9 @@ export default function App(): React.JSX.Element {
   const bskyReady = !!settings?.bskyEnabled && !!settings.bskyHandle && settings.hasBskyPassword
   const needsSetup = settings && session && (!session.loggedIn || !settings.hasXApiKeys) && !bskyReady
 
+  if (!gate) return <div className="anki-gate" />
+  if (!gate.open) return <AnkiWall gate={gate} />
+
   return (
     <div className="app">
       <Sidebar view={view} setView={setView} session={session} settings={settings} unread={unread} />
@@ -164,6 +182,20 @@ export default function App(): React.JSX.Element {
       </div>
       <ClaudePanel />
       <Lightbox />
+    </div>
+  )
+}
+
+function AnkiWall({ gate }: { gate: Extract<AnkiGate, { open: false }> }): React.JSX.Element {
+  const [error, setError] = useState<string | null>(null)
+  return (
+    <div className="anki-gate">
+      <button className="anki-button" onClick={() => window.api.openAnki().then(() => setError(null), (e: unknown) => setError(String(e)))}>Open Anki</button>
+      <p className="muted">
+        Today’s review first: clear “{gate.deck}” down to learning cards, or answer {gate.target} of its cards
+        {gate.reviewed !== null ? ` (${gate.reviewed} so far)` : ''}.
+      </p>
+      {(error ?? gate.note) && <p className="error">{error ?? gate.note}</p>}
     </div>
   )
 }

@@ -18,6 +18,7 @@ import { applyProxy, openLoginWindow, REAL_PARTITION, XBrowser } from './x/brows
 import * as official from './x/official'
 import * as bsky from './bsky/client'
 import { isBskyId } from '@shared/net'
+import { ankiGate, openAnki } from './anki'
 
 export function registerIpc(browser: XBrowser, web: XBrowser, mainWin: () => BrowserWindow | null, log: (m: string) => void): void {
   onProgress((p) => mainWin()?.webContents.send('progress', p))
@@ -293,4 +294,6 @@ export function registerIpc(browser: XBrowser, web: XBrowser, mainWin: () => Bro
     if (/^https?:\/\//.test(url)) return shell.openExternal(url)
     return undefined
   })
+  ipcMain.handle('anki:gate', () => ankiGate())
+  ipcMain.handle('anki:open', () => openAnki())
 }
