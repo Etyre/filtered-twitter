@@ -19,7 +19,7 @@ export default function SettingsView({
   const [draft, setDraft] = useDraft<Settings | null>('settings:draft', settings)
   const stopSample = useRef<(() => void) | null>(null) // the Reading aloud sample, while it plays
   useEffect(() => () => stopSample.current?.(), [])
-  const [secrets, setSecrets] = useDraft<Secrets>('settings:secrets', {})
+  const [secrets, setSecrets] = useDraft<Secrets>('settings:secrets', {}, { durable: false }) // keys being typed never touch disk
   const [stats, setStats] = useState<ScorerStats | null>(null)
   const [backup, setBackup] = useState<BackupStatus | null>(null)
   const [history, setHistory] = useState<HistoryStatus | null>(null)
@@ -35,7 +35,9 @@ export default function SettingsView({
   const [bskySearchText, setBskySearchText] = useDraft('settings:bskySearchText', settings?.bskySearchQueries.join('\n') ?? '')
   const [from, setFrom] = useDraft<Settings | null>('settings:from', settings) // the settings the draft was taken from
   useEffect(() => {
-    if (settings === from) return // same settings as the draft came from: keep what has been typed
+    if (!settings) return // still loading after a restart: the kept draft stays until the real settings arrive
+    // Same settings as the draft came from (by value, since the draft outlives the app): keep what has been typed.
+    if (settings === from || JSON.stringify(settings) === JSON.stringify(from)) return
     setFrom(settings)
     setDraft(settings)
     setPriorityText(settings?.priorityHandles.join('\n') ?? '')

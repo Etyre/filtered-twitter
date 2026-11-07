@@ -202,7 +202,7 @@ export async function buildEdition(browser: XBrowser, log: (m: string) => void, 
       const withPriority = [...scored.filter((x) => x.priorityAccount), ...shortlist]
       report('Claude scoring', `0/${withPriority.length}`)
       try {
-        const ratings = await scoreWithClaude(
+        const { ratings, halted } = await scoreWithClaude(
           withPriority.map((x) => x.tweet),
           {
             apiKey: key, model: s.claudeModel, profile: s.interestProfile, history, priorityHandles: s.priorityHandles, log,
@@ -218,6 +218,10 @@ export async function buildEdition(browser: XBrowser, log: (m: string) => void, 
           }
         }
         notes.push(`Claude rated ${ratings.size} of ${withPriority.length} sent.`)
+        if (halted) {
+          notes.push(halted)
+          log('claude: ' + halted)
+        }
       } catch (e) {
         notes.push('Claude scoring failed: ' + String(e))
         log('claude failed: ' + String(e))

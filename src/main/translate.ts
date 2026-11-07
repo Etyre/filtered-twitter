@@ -6,6 +6,7 @@ import { z } from 'zod'
 import type { Tweet } from '@shared/types'
 import { getTweet, upsertTweet } from './db'
 import { loadSettings, readSecret } from './settings'
+import { checkContact, contactTools, systemPrompt } from './llm'
 
 const Output = z.object({ translations: z.array(z.object({ id: z.string(), text: z.string() })) })
 
@@ -51,18 +52,27 @@ export async function translateTweets(tweets: Tweet[], log: (m: string) => void,
   const client = new Anthropic({ apiKey: key, maxRetries: 3 })
   const model = loadSettings().claudeModel
   const found = new Map<string, string>()
+  const system: Anthropic.TextBlockParam[] = [{ type: 'text', text: systemPrompt(SYSTEM, log), cache_control: { type: 'ephemeral' } }]
+  const tools = contactTools(log)
   const BATCH = 25
   let done = 0
   for (let i = 0; i < todo.length; i += BATCH) {
     const batch = todo.slice(i, i + BATCH)
     try {
+      const messages: Anthropic.MessageParam[] = [{ role: 'user', content: batch.map((t) => `[${t.id}] (${t.lang})\n${t.text}`).join('\n\n---\n\n') }]
       const res = await client.messages.parse({
         model,
         max_tokens: 16000,
         output_config: { effort: 'low', format: zodOutputFormat(Output) },
-        system: [{ type: 'text', text: SYSTEM, cache_control: { type: 'ephemeral' } }],
-        messages: [{ role: 'user', content: batch.map((t) => `[${t.id}] (${t.lang})\n${t.text}`).join('\n\n---\n\n') }]
+        system,
+        tools,
+        messages
       })
+      // Claude reached for Eli instead: recorded and notified by the shared inbox; the remaining batches wait.
+      if (await checkContact({ model, system, messages, response: res, tools }, log)) {
+        log(`translate: stopped after ${done} of ${todo.length} posts because Claude contacted Eli`)
+        break
+      }
       if (res.stop_reason === 'refusal') log(`translate refusal (${res.stop_details?.category ?? 'unknown'})`)
       for (const r of res.parsed_output?.translations ?? []) if (r.text.trim()) found.set(r.id, r.text.trim())
     } catch (e) {

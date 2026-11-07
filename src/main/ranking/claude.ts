@@ -5,6 +5,7 @@ import { zodOutputFormat } from '@anthropic-ai/sdk/helpers/zod'
 import { z } from 'zod'
 import type { Category, Tweet } from '@shared/types'
 import type { VoteRecord } from '../db'
+import { checkContact, contactTools, systemPrompt } from '../llm'
 
 const Rating = z.object({
   id: z.string(),
@@ -71,10 +72,18 @@ function buildSystem(opts: ClaudeScorerOpts): string {
   ].join('\n')
 }
 
-export async function scoreWithClaude(tweets: Tweet[], opts: ClaudeScorerOpts): Promise<Map<string, ClaudeRating>> {
+/** The ratings Claude returned, and a note when it stopped early because it contacted Eli (the remaining candidates were not sent). */
+export interface ClaudeScores {
+  ratings: Map<string, ClaudeRating>
+  halted: string | null
+}
+
+export async function scoreWithClaude(tweets: Tweet[], opts: ClaudeScorerOpts): Promise<ClaudeScores> {
   const client = new Anthropic({ apiKey: opts.apiKey, maxRetries: 3 })
-  const system = buildSystem(opts)
+  const system: Anthropic.TextBlockParam[] = [{ type: 'text', text: systemPrompt(buildSystem(opts), opts.log), cache_control: { type: 'ephemeral' } }]
+  const tools = contactTools(opts.log)
   const out = new Map<string, ClaudeRating>()
+  let halted: string | null = null
   const BATCH = 30
   const batches: Tweet[][] = []
   for (let i = 0; i < tweets.length; i += BATCH) batches.push(tweets.slice(i, i + BATCH))
@@ -85,13 +94,21 @@ export async function scoreWithClaude(tweets: Tweet[], opts: ClaudeScorerOpts): 
     while (batches.length) {
       const batch = batches.shift()!
       try {
+        const messages: Anthropic.MessageParam[] = [{ role: 'user', content: `Candidates:\n\n${batch.map((t) => fmtTweet(t)).join('\n\n')}` }]
         const res = await client.messages.parse({
           model: opts.model,
           max_tokens: 16000,
           output_config: { effort: 'low', format: zodOutputFormat(Output) },
-          system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }],
-          messages: [{ role: 'user', content: `Candidates:\n\n${batch.map((t) => fmtTweet(t)).join('\n\n')}` }]
+          system,
+          tools,
+          messages
         })
+        // Claude reached for Eli instead of rating: the inbox has it, and no further batch is sent.
+        if (await checkContact({ model: opts.model, system, messages, response: res, tools }, opts.log)) {
+          halted = `Claude stopped scoring to talk to Eli (${done} of ${tweets.length} candidates rated); see llm-inbox.`
+          batches.length = 0
+          break
+        }
         if (res.stop_reason === 'refusal') {
           opts.log(`claude refusal (${res.stop_details?.category ?? 'unknown'})`)
         }
@@ -112,5 +129,5 @@ export async function scoreWithClaude(tweets: Tweet[], opts: ClaudeScorerOpts): 
     }
   }
   await Promise.all(Array.from({ length: Math.min(CONC, batches.length) }, worker))
-  return out
+  return { ratings: out, halted }
 }

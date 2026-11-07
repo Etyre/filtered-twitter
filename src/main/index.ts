@@ -1,3 +1,12 @@
+// Filtered Twitter: a calm desktop client for X and Bluesky. Once a day it builds one finite edition
+// of about 100 posts (read through a disposable browsing account, ranked by a local heuristic plus
+// Claude), shows the discussion under each, and lets the reader like, reply, post and chat through
+// their real account. This is the Electron main process: window, database, scheduler, IPC.
+//
+// Everything lives in ~/Library/Application Support/filtered-twitter/: the SQLite database
+// (settings, secrets encrypted with safeStorage, editions, votes), the browsing account's session,
+// and the log, app.log. Backups go to the folder chosen in Settings (iCloud Drive by default).
+// See README.md for the rest.
 import { app, BrowserWindow, clipboard, Menu, shell } from 'electron'
 import type { MenuItemConstructorOptions } from 'electron'
 import { join } from 'path'

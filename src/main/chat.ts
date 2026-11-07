@@ -7,6 +7,10 @@ import { loadSettings, readSecret } from './settings'
 import { loadThread } from './thread'
 import type { XBrowser } from './x/browser'
 import { postUrl } from '@shared/net'
+import { checkContact, contactTools, systemPrompt } from './llm'
+
+/** Shown in the panel when Claude used the conversation to reach Eli; the inbox has the rest. */
+export const CONTACTED_ELI = 'Claude asked to talk to Eli instead of answering. The message is in his inbox (llm-inbox); this conversation stops here.'
 
 const SYSTEM = `You are a reading companion inside Filtered Twitter, a calm daily digest of X (Twitter) and Bluesky that one person reads. They are looking at a post, and the discussion around it is given to you below. Help them think about it: explain references, jargon or context they may be missing; say what the post is really claiming and how the replies push back; steelman and critique; check claims, using the web when it matters; and draft or sharpen a reply when asked, in their voice and under the network's length limits.
 
@@ -95,11 +99,12 @@ export async function chatAboutPost(
   const context = describe(focal, thread)
   const who = settings.xHandle || settings.bskyHandle
   const system = [
-    { type: 'text' as const, text: SYSTEM + (who ? `\n\nThe reader is @${who}.` : '') + (settings.interestProfile.trim() ? `\n\nWhat they care about, in their words:\n${settings.interestProfile.trim()}` : '') },
+    { type: 'text' as const, text: systemPrompt(SYSTEM + (who ? `\n\nThe reader is @${who}.` : '') + (settings.interestProfile.trim() ? `\n\nWhat they care about, in their words:\n${settings.interestProfile.trim()}` : ''), log) },
     { type: 'text' as const, text: `# The discussion\n\n${context}`, cache_control: { type: 'ephemeral' as const } }
   ]
   const client = new Anthropic({ apiKey: key, maxRetries: 2 })
   const tools: Anthropic.ToolUnion[] = [
+    ...contactTools(log),
     { type: 'web_search_20260209', name: 'web_search', max_uses: 8 },
     { type: 'web_fetch_20260209', name: 'web_fetch', max_uses: 8, max_content_tokens: 30_000 }
   ]
@@ -122,6 +127,8 @@ export async function chatAboutPost(
         }
       }
       const final = await current.finalMessage()
+      // A contact_eli call or an @ELI: line goes to Eli's inbox, and the task stops here, as the preamble promises.
+      if (await checkContact({ model: settings.claudeModel, system, messages: history, response: final, tools }, log)) return { ok: false, text, error: CONTACTED_ELI }
       for (const block of final.content) {
         if (block.type !== 'text') continue
         for (const c of block.citations ?? []) {

@@ -3,3 +3,15 @@ out
 dist
 .DS_Store
 build/icon.png
+
+# Real config and secrets never live in the repo (this app keeps them in the Keychain-backed database
+# under ~/Library/Application Support/filtered-twitter/), but keep the usual names out just in case.
+.env
+.env.*
+config.env
+config.json
+*.log
+*.db
+*.sqlite
+*.sqlite3
+*.jsonl
