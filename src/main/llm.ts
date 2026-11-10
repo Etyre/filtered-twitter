@@ -122,7 +122,8 @@ export interface ConfirmedCheck<R> {
  * checkContact with the shared confirm step in front (shared/README.md, "Confirm step in any other
  * language"). Small models call contact_eli for routine remarks, most of all on JSON-only calls where the
  * tool is the only place prose can go, so a contact_eli call is first answered with one forced-choice
- * question: send to Eli and stop, or it was a remark about the task and keep working.
+ * question: send to Eli and stop, or it was a remark about the task and keep working. The shared script
+ * decides which models are asked at all; for every other model this is exactly checkContact.
  *
  * Sending is the default. Only an explicit "keep working" continues the task: `again` is called with the
  * longer messages, and the returned response and messages are that continued exchange. Everything else,
@@ -132,8 +133,9 @@ export interface ConfirmedCheck<R> {
 export async function checkContactConfirmed<R>(c: ConfirmedCheck<R>, log: (m: string) => void): Promise<{ contacted: boolean; response: R; messages: Anthropic.MessageParam[] }> {
   let kept: { response: R; messages: Anthropic.MessageParam[] } | null = null
   try {
-    // Prints null when there is no contact_eli call; an @ELI: line is deliberate text and is never questioned.
-    const r = await runContact('confirm', { response: c.response, tools: c.tools }, log)
+    // Prints null when there is no contact_eli call, or when the model is not in the shared CONFIRM_MODELS list (the
+    // question was measured to be safe only there); an @ELI: line is deliberate text and is never questioned.
+    const r = await runContact('confirm', { model: c.model, response: c.response, tools: c.tools }, log)
     const plan = r.code === 0 ? JSON.parse(r.out) : null
     if (plan) {
       // Same model and system prompt; no output format and no thinking, which a forced tool cannot be combined with.

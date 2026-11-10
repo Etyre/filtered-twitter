@@ -15,16 +15,18 @@ const { checkContactConfirmed } = await import('../src/main/llm.ts')
 const lines = (name) => (existsSync(join(inbox, name)) ? readFileSync(join(inbox, name), 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : [])
 const tools = [{ name: 'contact_eli', description: 'x', input_schema: { type: 'object', properties: { message: { type: 'string' } } } }]
 const messages = [{ role: 'user', content: 'Candidates: ...' }]
+// The shared script runs the confirm step only for models in its CONFIRM_MODELS list (today just this one).
+const HAIKU = 'claude-haiku-4-5'
 const answer = { content: [{ type: 'text', text: '{"ratings":[]}' }], stop_reason: 'end_turn' }
 const contact = (message) => ({ content: [{ type: 'tool_use', id: 'toolu_1', name: 'contact_eli', input: { message } }], stop_reason: 'tool_use' })
 const decided = (meant) => ({ content: [{ type: 'tool_use', id: 'toolu_2', name: 'contact_eli_decision', input: { meant } }], stop_reason: 'tool_use' })
 
 /** Runs the helper with a stubbed decision call and a stubbed follow-up call, recording what each was sent. */
-async function run(response, { decision, again = answer } = {}) {
+async function run(response, { decision, again = answer, model = HAIKU } = {}) {
   const seen = { decisions: [], agains: [], logs: [] }
   const client = { messages: { create: async (body) => { seen.decisions.push(body); if (decision instanceof Error) throw decision; return decision } } }
   const result = await checkContactConfirmed(
-    { client, model: 'stub-model', system: 'SYSTEM', messages, response, tools, again: async (m) => { seen.agains.push(m); return again } },
+    { client, model, system: 'SYSTEM', messages, response, tools, again: async (m) => { seen.agains.push(m); return again } },
     (m) => seen.logs.push(m)
   )
   return { result, seen }
@@ -50,7 +52,7 @@ test('tool call, keep, normal answer: not sent, unconfirmed note written', async
   assert.deepEqual(seen.agains[0], result.messages)
   // The decision call: same model and system, the forced decision tool, and nothing that conflicts with it.
   const d = seen.decisions[0]
-  assert.equal(d.model, 'stub-model')
+  assert.equal(d.model, HAIKU)
   assert.equal(d.system, 'SYSTEM')
   assert.equal(d.messages.length, 3)
   assert.equal(d.messages[2].content[0].type, 'tool_result')
@@ -89,6 +91,21 @@ test('decision call throws: original sent', async () => {
   assert.ok(seen.logs.some((l) => l.includes('confirm step failed')))
 })
 
+test('model not validated for the confirm step: sent as before, no decision call', async () => {
+  const before = lines('messages.jsonl').length
+  const unconfirmed = lines('unconfirmed.jsonl').length
+  const first = contact('there is only one post in this batch')
+  const { result, seen } = await run(first, { decision: decided('task_remark_keep_working'), model: 'claude-opus-5-5' })
+  assert.equal(result.contacted, true)
+  assert.equal(result.response, first)
+  assert.equal(result.messages, messages)
+  assert.equal(seen.decisions.length, 0)
+  assert.equal(seen.agains.length, 0)
+  assert.equal(lines('messages.jsonl').length, before + 1)
+  assert.equal(lines('messages.jsonl').at(-1).model, 'claude-opus-5-5')
+  assert.equal(lines('unconfirmed.jsonl').length, unconfirmed)
+})
+
 test('unclear decision (no decision block): original sent', async () => {
   const before = lines('messages.jsonl').length
   const { result } = await run(contact('unclear'), { decision: answer })
@@ -101,7 +118,7 @@ test('keep, but the follow-up call throws: original sent', async () => {
   const unconfirmed = lines('unconfirmed.jsonl').length
   const seen = []
   const result = await checkContactConfirmed(
-    { client: { messages: { create: async () => decided('task_remark_keep_working') } }, model: 'stub-model', system: 'SYSTEM', messages, response: contact('remark'), tools, again: async () => { throw new Error('api down') } },
+    { client: { messages: { create: async () => decided('task_remark_keep_working') } }, model: HAIKU, system: 'SYSTEM', messages, response: contact('remark'), tools, again: async () => { throw new Error('api down') } },
     (m) => seen.push(m)
   )
   assert.equal(result.contacted, true)
