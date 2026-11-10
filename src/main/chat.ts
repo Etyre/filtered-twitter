@@ -7,7 +7,7 @@ import { loadSettings, readSecret } from './settings'
 import { loadThread } from './thread'
 import type { XBrowser } from './x/browser'
 import { postUrl } from '@shared/net'
-import { checkContact, contactTools, systemPrompt } from './llm'
+import { checkContactConfirmed, contactTools, systemPrompt } from './llm'
 
 /** Shown in the panel when Claude used the conversation to reach Eli; the inbox has the rest. */
 export const CONTACTED_ELI = 'Claude asked to talk to Eli instead of answering. The message is in his inbox (llm-inbox); this conversation stops here.'
@@ -108,7 +108,7 @@ export async function chatAboutPost(
     { type: 'web_search_20260209', name: 'web_search', max_uses: 8 },
     { type: 'web_fetch_20260209', name: 'web_fetch', max_uses: 8, max_content_tokens: 30_000 }
   ]
-  const history: Anthropic.MessageParam[] = messages.map((m) => ({ role: m.role, content: m.text }))
+  let history: Anthropic.MessageParam[] = messages.map((m) => ({ role: m.role, content: m.text }))
   let text = ''
   const sources = new Map<string, string>() // url -> title
   let stopped = false
@@ -117,18 +117,24 @@ export async function chatAboutPost(
   try {
     // The server runs its own search loop and may pause it; sending the paused turn back resumes it.
     for (let round = 0; round < 6 && !stopped; round++) {
-      current = client.messages.stream({ model: settings.claudeModel, max_tokens: 8000, system, tools, messages: history })
-      for await (const event of current) {
-        if (event.type === 'content_block_start' && event.content_block.type === 'server_tool_use') {
-          onDelta({ status: event.content_block.name === 'web_fetch' ? 'Reading a page…' : 'Searching the web…' })
-        } else if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
-          text += event.delta.text
-          onDelta({ text: event.delta.text })
+      const ask = async (m: Anthropic.MessageParam[]): Promise<Anthropic.Message> => {
+        current = client.messages.stream({ model: settings.claudeModel, max_tokens: 8000, system, tools, messages: m })
+        for await (const event of current) {
+          if (event.type === 'content_block_start' && event.content_block.type === 'server_tool_use') {
+            onDelta({ status: event.content_block.name === 'web_fetch' ? 'Reading a page…' : 'Searching the web…' })
+          } else if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+            text += event.delta.text
+            onDelta({ text: event.delta.text })
+          }
         }
+        return current.finalMessage()
       }
-      const final = await current.finalMessage()
-      // A contact_eli call or an @ELI: line goes to Eli's inbox, and the task stops here, as the preamble promises.
-      if (await checkContact({ model: settings.claudeModel, system, messages: history, response: final, tools }, log)) return { ok: false, text, error: CONTACTED_ELI }
+      // A contact_eli call (confirmed when asked) or an @ELI: line goes to Eli's inbox, and the task stops here, as the preamble promises.
+      const checked = await checkContactConfirmed({ client, model: settings.claudeModel, system, messages: history, response: await ask(history), tools, again: ask }, log)
+      if (checked.contacted) return { ok: false, text, error: CONTACTED_ELI }
+      const final = checked.response
+      // When Claude chose to keep working, the exchange now includes its tool call and the answer to it.
+      history = checked.messages
       for (const block of final.content) {
         if (block.type !== 'text') continue
         for (const c of block.citations ?? []) {

@@ -25,6 +25,8 @@ If the Anki gate is on, the app stays behind an "Open Anki" screen each day unti
 
 Claude is used in three places: scoring candidates in batches of 30 (`src/main/ranking/claude.ts`), translating non-English posts (`src/main/translate.ts`), and "Talk to Claude", a side panel for discussing one post and its replies with web search and fetch (`src/main/chat.ts`). All three go through `src/main/llm.ts`, which keeps the agent-coding LLM contract: every system prompt starts with the shared preamble from `~/Documents/agent-coding/shared/llm-system-prompt-preamble.md` (read at call time, word for word), every call offers the `contact_eli` tool, and every response is piped to `python3 ~/Documents/agent-coding/shared/llm_contact.py check`. If Claude calls the tool or writes an `@ELI:` line, the shared inbox records the whole exchange and notifies Eli, and the task stops: a chat shows a message and ends, scoring sends no further batches (the edition notes say so), translation leaves the remaining posts untranslated.
 
+Confirm step (`checkContactConfirmed` in `llm.ts`, at all three call sites, added 2026-11-10): a `contact_eli` tool call is not sent straight away, because Haiku uses the tool for routine remarks about the task. The response goes to `llm_contact.py confirm`, and the same model with the same system prompt is asked one forced-choice question (no output format, no thinking). Only an explicit `task_remark_keep_working` continues: the call site's normal call is made again with the tool call and "nothing was sent" appended, that reply is checked instead, and what the model first said is kept in `LLMInbox/unconfirmed.jsonl` (not notified). Send, an unclear answer, a timeout or any error in the step: the original response is checked and sent as before. An `@ELI:` line is never questioned. The protocol is in `~/Documents/agent-coding/shared/README.md`.
+
 ### Drafts are never lost
 
 Every text box (composer parts, DM replies, the Claude panel, the Settings form) saves on each keystroke to `localStorage` under a key naming the box and what it belongs to (`composer:reply:<id>`, `dm:drafts`, `claude:<post id>`, `settings:draft`), and is restored before it is first shown. Drafts are cleared only when the text is sent or saved. The API keys being typed in Settings are the one exception: they stay in memory until saved into the encrypted database.
@@ -39,7 +41,8 @@ Every text box (composer parts, DM replies, the Claude panel, the Settings form)
 | `src/main/ranking/heuristic.ts` | Local scorer and the per-author/per-word model trained from votes. |
 | `src/main/ranking/claude.ts` | Claude scorer (structured output, batches of 30, cached system prompt). |
 | `src/main/ranking/blend.ts` | Logistic regression over the two scores, refit on every build. |
-| `src/main/llm.ts` | Shared LLM contract: preamble, `contact_eli` tool, inbox check after every response. |
+| `src/main/llm.ts` | Shared LLM contract: preamble, `contact_eli` tool, confirm step and inbox check after every response. |
+| `test/confirm.test.mjs` | Offline test of the confirm step: stubbed model replies, the real `llm_contact.py`, a throwaway inbox. |
 | `src/main/chat.ts` | "Talk to Claude" about one post, streamed, with web search and fetch. |
 | `src/main/translate.ts` | Translates non-English posts with Claude, at build time or on demand. |
 | `src/main/thread.ts` | Loads and caches a post's discussion (ancestors and reply tree). |
@@ -67,14 +70,14 @@ Every text box (composer parts, DM replies, the Claude panel, the Settings form)
 | `src/shared/types.ts`, `src/shared/net.ts` | Types and URL helpers shared by main and renderer. |
 | `electron.vite.config.ts`, `tsconfig*.json` | Build configuration (electron-vite, three TypeScript projects). |
 | `build/icon.icns`, `build/icon.svg` | App icon. |
-| `package.json` | Scripts (`dev`, `build`, `typecheck`, `package`, `install-app`) and electron-builder config. |
+| `package.json` | Scripts (`dev`, `build`, `typecheck`, `test`, `package`, `install-app`) and electron-builder config. |
 
 ## Runtime locations
 
 - Data: `~/Library/Application Support/filtered-twitter/`: the SQLite database (`filtered-twitter.sqlite`: settings, editions, votes, cached discussions, and secrets encrypted with Electron's safeStorage, Keychain-backed), the browsing account's and your web session's Chromium partitions, and the log, `app.log` (ISO timestamps on every line; also printed to stdout in dev). The installed app and the dev build share all of it.
 - Backups: the folder in Settings → Backups, by default `~/Library/Mobile Documents/com~apple~CloudDocs/Filtered Twitter backups` (iCloud Drive) or `~/Documents/Filtered Twitter backups` without iCloud.
 - Installed app: `/Applications/Filtered Twitter.app` (unsigned, ad-hoc signed on install). Packaging output: `dist/mac-arm64/`. Production build: `out/`.
-- LLM inbox (shared): `~/Library/Application Support/LLMInbox/messages.jsonl` and `~/Library/Logs/llm-inbox.log`; read with `llm-inbox`.
+- LLM inbox (shared): `~/Library/Application Support/LLMInbox/messages.jsonl`, `unconfirmed.jsonl` beside it (tool calls Claude said were task remarks) and `~/Library/Logs/llm-inbox.log`; read with `llm-inbox`.
 - Drafts: the renderer's `localStorage`, inside the app's `Local Storage/` folder under the data directory.
 
 ## Common tasks
@@ -83,6 +86,7 @@ Every text box (composer parts, DM replies, the Claude panel, the Settings form)
 npm install
 npm run dev        # development, with hot reload
 npm run typecheck  # tsc over main/preload and renderer
+npm test           # offline test of the contact_eli confirm step (temp inbox, nothing is sent to Eli)
 npm run build      # production build into out/
 npx electron .     # run the production build
 npm run package    # unsigned Filtered Twitter.app in dist/mac-arm64/
@@ -126,3 +130,5 @@ LLM inbox: the shared `~/Library/Application Support/LLMInbox/config.env` decide
 - Since February 2026 the self-serve X API tiers refuse replies to and quotes of posts whose author never mentioned you; the app routes those through your own web session when you have logged it in, or offers the x.com intent URL with the text filled in.
 - Drafts live in `localStorage`, so clearing the app's data directory clears them too; the Settings draft is compared to the saved settings by value, because after a restart the objects are no longer the same.
 - Every Claude call must go through `src/main/llm.ts`; a new call site that builds its own system prompt or skips `checkContact` breaks the shared contract silently. `translate.ts` and `ranking/claude.ts` pass the `contact_eli` tool alongside `output_config.format`; a tool call there leaves `parsed_output` null, which the code already tolerates.
+- The confirm step costs one extra `python3` spawn per response and, only after a `contact_eli` call, one or two extra model calls. Its decision call must not carry `output_config.format` or thinking: a forced `tool_choice` cannot be combined with them, the call would fail, and every tool call would then be sent to Eli (the safe direction, but the step would be doing nothing). In Talk to Claude, text streamed before the tool call stays on screen and the follow-up answer is appended to it.
+- Tests that run `llm_contact.py` must set `LLM_INBOX_DIR` to a temp directory before the first spawn (`test/confirm.test.mjs` does); without it a test writes to the real inbox and notifies Eli. Node runs `src/main/llm.ts` directly in that test by stripping types, so `llm.ts` must stay free of enums and other syntax that needs compiling, and of `electron` imports.

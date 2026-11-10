@@ -5,7 +5,7 @@ import { zodOutputFormat } from '@anthropic-ai/sdk/helpers/zod'
 import { z } from 'zod'
 import type { Category, Tweet } from '@shared/types'
 import type { VoteRecord } from '../db'
-import { checkContact, contactTools, systemPrompt } from '../llm'
+import { checkContactConfirmed, contactTools, systemPrompt } from '../llm'
 
 const Rating = z.object({
   id: z.string(),
@@ -95,16 +95,17 @@ export async function scoreWithClaude(tweets: Tweet[], opts: ClaudeScorerOpts): 
       const batch = batches.shift()!
       try {
         const messages: Anthropic.MessageParam[] = [{ role: 'user', content: `Candidates:\n\n${batch.map((t) => fmtTweet(t)).join('\n\n')}` }]
-        const res = await client.messages.parse({
+        const ask = (m: Anthropic.MessageParam[]) => client.messages.parse({
           model: opts.model,
           max_tokens: 16000,
           output_config: { effort: 'low', format: zodOutputFormat(Output) },
           system,
           tools,
-          messages
+          messages: m
         })
-        // Claude reached for Eli instead of rating: the inbox has it, and no further batch is sent.
-        if (await checkContact({ model: opts.model, system, messages, response: res, tools }, opts.log)) {
+        // Claude reached for Eli instead of rating (and confirmed it when asked): the inbox has it, and no further batch is sent.
+        const { contacted, response: res } = await checkContactConfirmed({ client, model: opts.model, system, messages, response: await ask(messages), tools, again: ask }, opts.log)
+        if (contacted) {
           halted = `Claude stopped scoring to talk to Eli (${done} of ${tweets.length} candidates rated); see llm-inbox.`
           batches.length = 0
           break

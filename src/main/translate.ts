@@ -6,7 +6,7 @@ import { z } from 'zod'
 import type { Tweet } from '@shared/types'
 import { getTweet, upsertTweet } from './db'
 import { loadSettings, readSecret } from './settings'
-import { checkContact, contactTools, systemPrompt } from './llm'
+import { checkContactConfirmed, contactTools, systemPrompt } from './llm'
 
 const Output = z.object({ translations: z.array(z.object({ id: z.string(), text: z.string() })) })
 
@@ -60,16 +60,17 @@ export async function translateTweets(tweets: Tweet[], log: (m: string) => void,
     const batch = todo.slice(i, i + BATCH)
     try {
       const messages: Anthropic.MessageParam[] = [{ role: 'user', content: batch.map((t) => `[${t.id}] (${t.lang})\n${t.text}`).join('\n\n---\n\n') }]
-      const res = await client.messages.parse({
+      const ask = (m: Anthropic.MessageParam[]) => client.messages.parse({
         model,
         max_tokens: 16000,
         output_config: { effort: 'low', format: zodOutputFormat(Output) },
         system,
         tools,
-        messages
+        messages: m
       })
-      // Claude reached for Eli instead: recorded and notified by the shared inbox; the remaining batches wait.
-      if (await checkContact({ model, system, messages, response: res, tools }, log)) {
+      // Claude reached for Eli instead (and confirmed it when asked): recorded and notified by the shared inbox; the remaining batches wait.
+      const { contacted, response: res } = await checkContactConfirmed({ client, model, system, messages, response: await ask(messages), tools, again: ask }, log)
+      if (contacted) {
         log(`translate: stopped after ${done} of ${todo.length} posts because Claude contacted Eli`)
         break
       }
