@@ -127,20 +127,23 @@ export async function chatAboutPost(
             onDelta({ text: event.delta.text })
           }
         }
-        return current.finalMessage()
+        const message = await current.finalMessage()
+        // Collected per call, not from the last reply only: a turn that also left a note is followed by another call.
+        for (const block of message.content) {
+          if (block.type !== 'text') continue
+          for (const c of block.citations ?? []) {
+            if (c.type === 'web_search_result_location' && !sources.has(c.url)) sources.set(c.url, c.title ?? '')
+          }
+        }
+        return message
       }
       // A contact_eli call (confirmed when asked) or an @ELI: line goes to Eli's inbox, and the task stops here, as the preamble promises.
+      // A note_to_eli call is recorded there too, answered, and the reply carries on in a further call (same streaming, text appended).
       const checked = await checkContactConfirmed({ client, model: settings.claudeModel, system, messages: history, response: await ask(history), tools, again: ask }, log)
       if (checked.contacted) return { ok: false, text, error: CONTACTED_ELI }
       const final = checked.response
-      // When Claude chose to keep working, the exchange now includes its tool call and the answer to it.
+      // When Claude chose to keep working, or left a note, the exchange now includes its tool call and the answer to it.
       history = checked.messages
-      for (const block of final.content) {
-        if (block.type !== 'text') continue
-        for (const c of block.citations ?? []) {
-          if (c.type === 'web_search_result_location' && !sources.has(c.url)) sources.set(c.url, c.title ?? '')
-        }
-      }
       if (final.stop_reason === 'refusal') return { ok: false, text, error: 'Claude declined to answer that.' }
       if (final.stop_reason !== 'pause_turn') break
       history.push({ role: 'assistant', content: final.content })

@@ -4,6 +4,8 @@
 // to the shared inbox (shared/llm_contact.py), which records it and notifies him. When it finds one,
 // the caller stops that task: no retry, no pushing past it. A contact_eli tool call is first put back
 // to the model as one question (checkContactConfirmed), because Haiku uses the tool for task remarks.
+// The model is also offered note_to_eli, which leaves Eli a message and does not stop anything: the
+// same check records the note, and checkContactConfirmed answers the call and asks the model again.
 //
 // The shared files are read at call time, so an edit to the preamble applies to the next request.
 import { readFileSync } from 'fs'
@@ -12,7 +14,8 @@ import type Anthropic from '@anthropic-ai/sdk'
 
 const SHARED = '/Users/elityre/Documents/agent-coding/shared'
 const PREAMBLE_PATH = `${SHARED}/llm-system-prompt-preamble.md`
-const TOOL_PATH = `${SHARED}/contact_eli_tool.json`
+// contact_eli stops the task; note_to_eli leaves a message and the task carries on.
+const TOOL_PATHS = [`${SHARED}/contact_eli_tool.json`, `${SHARED}/note_to_eli_tool.json`]
 const CONTACT_SCRIPT = `${SHARED}/llm_contact.py`
 export const APP_NAME = 'filtered-twitter'
 
@@ -33,14 +36,17 @@ export function systemPrompt(instructions: string, log: (m: string) => void): st
   return pre ? pre + (own ? `\n\n${own}` : '') : own
 }
 
-/** The contact_eli tool, as a one-element list so it spreads into any tools array; empty (logged) if unreadable. */
+/** The contact_eli and note_to_eli tools, as a list that spreads into any tools array; one that cannot be read is left out (logged). */
 export function contactTools(log: (m: string) => void): Anthropic.Tool[] {
-  try {
-    return [JSON.parse(readFileSync(TOOL_PATH, 'utf8')) as Anthropic.Tool]
-  } catch (e) {
-    log(`llm: contact_eli tool missing at ${TOOL_PATH}: ${String(e)}`)
-    return []
+  const tools: Anthropic.Tool[] = []
+  for (const path of TOOL_PATHS) {
+    try {
+      tools.push(JSON.parse(readFileSync(path, 'utf8')) as Anthropic.Tool)
+    } catch (e) {
+      log(`llm: contact tool missing at ${path}: ${String(e)}`)
+    }
   }
+  return tools
 }
 
 /** The system prompt as one string, however it was sent, for the inbox record. */
@@ -97,14 +103,39 @@ function runContact(cmd: string, payload: unknown, log: (m: string) => void): Pr
  * check is logged and treated as "no message", so a broken python never blocks the app.
  */
 export async function checkContact(c: ContactCheck, log: (m: string) => void): Promise<boolean> {
+  return (await checkOnce(c, log)).contacted
+}
+
+/**
+ * The check itself. `noteTurns` is set when the response only left notes (note_to_eli): the script has
+ * recorded them, nothing stops, and these two messages (the model's turn, then a tool_result for each
+ * call) are what to append before asking the model again.
+ */
+async function checkOnce(c: ContactCheck, log: (m: string) => void): Promise<{ contacted: boolean; noteTurns: Anthropic.MessageParam[] | null }> {
   const r = await runContact('check', { app: APP_NAME, model: c.model, system: systemText(c.system), messages: c.messages, response: c.response, tools: c.tools ?? [] }, log)
   if (r.code === 3) {
     log(`llm: Claude contacted Eli; task stopped. ${r.out.trim()}`)
-    return true
+    return { contacted: true, noteTurns: null }
   }
-  if (r.code !== null && r.code !== 0) log(`llm: contact check exited ${r.code}: ${r.err.trim().slice(0, 500)}`)
-  return false
+  if (r.code !== 0) {
+    if (r.code !== null) log(`llm: contact check exited ${r.code}: ${r.err.trim().slice(0, 500)}`)
+    return { contacted: false, noteTurns: null }
+  }
+  let noteTurns: Anthropic.MessageParam[] | null = null
+  try {
+    const out = r.out.trim() ? JSON.parse(r.out) : null
+    if (out?.halts === false && Array.isArray(out.continue) && out.continue.length) {
+      noteTurns = out.continue
+      log(`llm: Claude left Eli ${out.notes?.length ?? 1} note(s); recorded, task carries on`)
+    }
+  } catch (e) {
+    log(`llm: contact check output not understood: ${String(e)}`)
+  }
+  return { contacted: false, noteTurns }
 }
+
+/** How many times a reply that only leaves notes is answered and the model asked again. */
+const NOTE_ROUNDS = 3
 
 export interface ConfirmedCheck<R> {
   model: string
@@ -129,8 +160,28 @@ export interface ConfirmedCheck<R> {
  * longer messages, and the returned response and messages are that continued exchange. Everything else,
  * including any error or odd shape in here, runs the check on the original response with the original
  * messages, so a broken confirm step sends the message rather than losing it.
+ *
+ * A note_to_eli call never stops the task and is never questioned; see the loop below.
  */
 export async function checkContactConfirmed<R>(c: ConfirmedCheck<R>, log: (m: string) => void): Promise<{ contacted: boolean; response: R; messages: Anthropic.MessageParam[] }> {
+  // A reply that only leaves Eli a note (note_to_eli) is not the task's answer and stops nothing. The check has
+  // recorded it; the call is answered with the acknowledgement the script hands back and the model is asked
+  // again, each new reply going through the confirm step and check like the first. Three such rounds at most.
+  let cur = c
+  for (let round = 0; ; round++) {
+    const step = await confirmAndCheck(cur, log)
+    if (step.contacted || !step.noteTurns) return { contacted: step.contacted, response: step.response, messages: step.messages }
+    if (round === NOTE_ROUNDS) {
+      log(`llm: still only notes after ${NOTE_ROUNDS} follow-up calls; giving up on an answer`)
+      return { contacted: false, response: step.response, messages: step.messages }
+    }
+    const messages = [...step.messages, ...step.noteTurns]
+    cur = { ...c, messages, response: await c.again(messages) }
+  }
+}
+
+/** The confirm step and the check for one response; `noteTurns` as in checkOnce. */
+async function confirmAndCheck<R>(c: ConfirmedCheck<R>, log: (m: string) => void): Promise<{ contacted: boolean; noteTurns: Anthropic.MessageParam[] | null; response: R; messages: Anthropic.MessageParam[] }> {
   let kept: { response: R; messages: Anthropic.MessageParam[] } | null = null
   try {
     // Prints null when there is no contact_eli call, or when the model is not in the shared CONFIRM_MODELS list (the
@@ -153,12 +204,12 @@ export async function checkContactConfirmed<R>(c: ConfirmedCheck<R>, log: (m: st
     log(`llm: confirm step failed, sending the original message: ${String(e)}`)
     kept = null
   }
-  if (!kept) return { contacted: await checkContact(c, log), response: c.response, messages: c.messages }
-  const contacted = await checkContact({ ...c, ...kept }, log)
-  if (!contacted) {
+  if (!kept) return { ...(await checkOnce(c, log)), response: c.response, messages: c.messages }
+  const checked = await checkOnce({ ...c, ...kept }, log)
+  if (!checked.contacted) {
     // Nothing is discarded: what the model said in the call it did not confirm goes to unconfirmed.jsonl for Eli to audit.
     await runContact('unconfirmed', { app: APP_NAME, model: c.model, response: c.response }, log)
     log('llm: contact_eli call was a task remark (model chose to keep working); not sent, kept in unconfirmed.jsonl')
   }
-  return { contacted, ...kept }
+  return { ...checked, ...kept }
 }
